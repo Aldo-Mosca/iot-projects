@@ -33,5 +33,5 @@ See [`docs/swift-matter-smart-light-xiao-esp32c6.md`](docs/swift-matter-smart-li
 - **Host**: macOS (Apple Silicon)
 
 ### TODOs
-[ ] Adapt code to work with the [recently released Swift toolchain](https://www.swift.org)
-[ ] Implement the Humidifier-Matter bridge
+- [ ] Adapt code to work with the [recently released Swift toolchain](https://www.swift.org)
+- [ ] Implement the Humidifier-Matter bridge
