@@ -188,8 +188,8 @@ extension Matter {
 
 func print(_ a: Matter.Endpoint.Attribute) {
   switch a {
-  case .onOff: print("onOff")
-  case .levelControl: print("levelControl")
+  case .onOff: print("onOff 📴")
+  case .levelControl: print("levelControl 🎚️")
   case .colorControl(let a):
     print("colorControl(", terminator: "")
     switch a {
