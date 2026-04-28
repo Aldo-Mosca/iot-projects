@@ -20,11 +20,9 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <led_strip.h>
+#include <driver/gpio.h>
 #include <sdkconfig.h>
 #include <nvs_flash.h>
-#include <led_driver.h>
-#include <device.h>
 
 // ESP Matter
 // ==========

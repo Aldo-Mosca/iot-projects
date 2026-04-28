@@ -40,6 +40,9 @@ struct ClusterID<Cluster: MatterCluster>: RawRepresentable {
   static var colorControl: ClusterID<ColorControl> {
     .init(rawValue: 0x0000_0300)
   }
+  static var fanControl: ClusterID<FanControl> {
+    .init(rawValue: 0x0000_0202)
+  }
 }
 
 struct Cluster: MatterCluster {
@@ -173,5 +176,21 @@ struct ColorControl: MatterConcreteCluster {
   ) {
     var cfg = config
     esp_matter.cluster.color_control.feature.hue_saturation.add(cluster, &cfg)
+  }
+}
+
+struct FanControl: MatterConcreteCluster {
+  static var clusterTypeId: ClusterID<Self> { .fanControl }
+  struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
+    var rawValue: UInt32
+
+    static var fanMode: AttributeID<FanModeValue> { .init(rawValue: 0x0000_0000) }
+    static var percentSetting: AttributeID<PercentSettingValue> { .init(rawValue: 0x0000_0002) }
+  }
+
+  var cluster: UnsafeMutablePointer<esp_matter.cluster_t>
+
+  init(_ cluster: UnsafeMutablePointer<esp_matter.cluster_t>) {
+    self.cluster = cluster
   }
 }

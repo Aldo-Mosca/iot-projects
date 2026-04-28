@@ -100,6 +100,10 @@ struct RootNode: MatterNode {
   }
 }
 
+// Registry populated at endpoint creation time; keyed by endpoint pointer address.
+// Replaces the removed esp_matter.endpoint.get_device_type_ids API.
+var _endpointDeviceTypeRegistry: [UInt: UInt32] = [:]
+
 struct Endpoint: MatterEndpoint {
   var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>
 
@@ -114,47 +118,26 @@ struct Endpoint: MatterEndpoint {
   }
 
   func `as`<T: MatterConreteEndpoint>(_ type: T.Type) -> T? {
-    var count = UInt8(0)
-    let expected = T.deviceTypeId
-    let ids = esp_matter.endpoint.get_device_type_ids(endpoint, &count)
-    for id in UnsafeMutableBufferPointer(start: ids, count: Int(count)) {
-      if id == expected {
-        return T(endpoint)
-      }
+    guard _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] == T.deviceTypeId else {
+      return nil
     }
-    return nil
+    return T(endpoint)
   }
 }
 
-struct MatterExtendedColorLight: MatterConreteEndpoint {
-  static var deviceTypeId: UInt32 {
-    esp_matter.endpoint.extended_color_light.get_device_type_id()
-  }
+struct MatterFan: MatterConreteEndpoint {
+  // Matter spec device type ID for Fan (0x0044).
+  static var deviceTypeId: UInt32 { 0x0044 }
 
   var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>
 
-  init(
-    _ node: RootNode,
-    configuration: esp_matter.endpoint.extended_color_light.config_t
-  ) {
-    var config = configuration
-    endpoint = esp_matter.endpoint.extended_color_light.create(
-      node.node, &config, 0x00, Unmanaged.passRetained(node.context).toOpaque())
+  init(_ node: RootNode) {
+    endpoint = create_humidifier_fan_endpoint(
+      node.node, Unmanaged.passRetained(node.context).toOpaque())
+    _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] = MatterFan.deviceTypeId
   }
 
   init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>) {
     self.endpoint = endpoint
-  }
-
-  var levelControl: LevelControl {
-    cluster(.levelControl)
-  }
-
-  var colorControl: ColorControl {
-    cluster(.colorControl)
-  }
-
-  var onOff: OnOff {
-    cluster(.onOff)
   }
 }

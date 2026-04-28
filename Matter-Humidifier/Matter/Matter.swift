@@ -83,6 +83,8 @@ extension Matter {
       case onOff
       case levelControl
       case colorControl(ColorControlAttribute)
+      case fanMode
+      case percentSetting
       case unknown(UInt32)
 
       init?(cluster: Cluster, attribute: UInt32) {
@@ -118,6 +120,14 @@ extension Matter {
             self = .colorControl(.colorMode)
           default: return nil
           }
+        } else if cluster.as(FanControl.self) != nil {
+          switch attribute {
+          case FanControl.AttributeID<FanControl.FanModeValue>.fanMode.rawValue:
+            self = .fanMode
+          case FanControl.AttributeID<FanControl.PercentSettingValue>.percentSetting.rawValue:
+            self = .percentSetting
+          default: return nil
+          }
         } else {
           self = .unknown(attribute)
         }
@@ -133,28 +143,16 @@ extension Matter {
 }
 
 extension Matter {
-  class ExtendedColorLight: Endpoint {
+  class Fan: Endpoint {
     override init(node: Node) {
       super.init(node: node)
 
-      var lightConfig = esp_matter.endpoint.extended_color_light.config_t()
-      lightConfig.on_off.on_off = true
-      lightConfig.level_control.current_level = .init(64)
-      lightConfig.level_control.lighting.start_up_current_level = .init(64)
-      lightConfig.color_control.color_mode =
-        chip.app.Clusters.ColorControl.ColorMode.colorTemperature.rawValue
-      lightConfig.color_control.enhanced_color_mode =
-        chip.app.Clusters.ColorControl.ColorMode.colorTemperature.rawValue
+      let fan = MatterFan(node.innerNode)
+      self.id = Int(fan.id)
+    }
 
-      let light = MatterExtendedColorLight(
-        node.innerNode, configuration: lightConfig)
-      self.id = Int(light.id)
-
-      var hsv = esp_matter.cluster.color_control.feature.hue_saturation
-        .config_t()
-      hsv.current_hue = 255
-      hsv.current_saturation = 255
-      light.colorControl.add(hsv)
+    func updateFanMode(_ mode: UInt8) {
+      matter_fan_update_mode(UInt16(id), mode)
     }
   }
 }
@@ -188,8 +186,8 @@ extension Matter {
 
 func print(_ a: Matter.Endpoint.Attribute) {
   switch a {
-  case .onOff: print("onOff 📴")
-  case .levelControl: print("levelControl 🎚️")
+  case .onOff: print("onOff")
+  case .levelControl: print("levelControl")
   case .colorControl(let a):
     print("colorControl(", terminator: "")
     switch a {
@@ -202,6 +200,8 @@ func print(_ a: Matter.Endpoint.Attribute) {
     case .colorMode: print("colorMode", terminator: "")
     }
     print(")")
+  case .fanMode: print("fanMode")
+  case .percentSetting: print("percentSetting")
   case .unknown: print("unknown")
   }
 }

@@ -30,3 +30,28 @@ namespace esp_matter {
 // Recomissioning causes failures with reference semantics so this is done as a function implemented in C++.
 // Ideally this would be done by changing some of the headers in ESP Matter to have proper Swift annotations.
 void recomissionFabric();
+
+// Creates a fan endpoint (device type 0x0044) configured for the humidifier:
+//   FanModeSequence = Off/Low/Med/High (0x00)
+//   percent_setting = null  (no speed slider)
+esp_matter::endpoint_t *create_humidifier_fan_endpoint(
+    esp_matter::node_t *node, void *priv_data);
+
+extern "C" {
+
+// pdMS_TO_TICKS is a C macro and cannot be called directly from Swift.
+void delay_ms(uint32_t ms);
+
+// Update the Fan Control cluster's FanMode attribute in the Matter data model.
+// Call this when a physical K1 press changes the firmware state.
+// fan_mode values: 0=Off, 1=Low, 2=Med(Night), 3=High.
+esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode);
+
+// Configure a GPIO as input with a falling-edge interrupt to detect physical K1 presses.
+// Detected presses are latched; poll with matter_button_was_pressed().
+void setup_button_listen_gpio(int32_t gpio_num);
+
+// Returns true (and clears the latch) if a physical K1 press was detected since last call.
+bool matter_button_was_pressed(void);
+
+} // extern "C"

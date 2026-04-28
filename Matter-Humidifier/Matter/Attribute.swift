@@ -84,3 +84,12 @@ extension OnOff {
     var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
   }
 }
+
+extension FanControl {
+  struct FanModeValue: MatterAttribute {
+    var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
+  }
+  struct PercentSettingValue: MatterAttribute {
+    var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
+  }
+}
