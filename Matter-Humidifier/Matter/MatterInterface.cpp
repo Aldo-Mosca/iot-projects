@@ -25,26 +25,38 @@ esp_matter::attribute_t *esp_matter::attribute::get_shim(esp_matter::cluster_t *
 
 // ---- Fan endpoint factory ----
 //
-// FanModeSequence 0x00 = Off / Low / Med / High
+// FanModeSequence 0x02 = Off / Low / High  (no Auto)
 // percent_setting = nullptr → null attribute value → no speed slider
+// No multi_speed feature added → FeatureMap SPD bit = 0 → Apple Home renders
+// discrete mode buttons (Off / Low / High) instead of a continuous slider.
 
 esp_matter::endpoint_t *create_humidifier_fan_endpoint(
     esp_matter::node_t *node, void *priv_data) {
   esp_matter::endpoint::fan::config_t config;
-  config.fan_control.fan_mode          = 0;     // Off
-  config.fan_control.fan_mode_sequence = 0x03;  // Off/Low/High/Auto
+  config.fan_control.fan_mode          = 0;       // Off
+  config.fan_control.fan_mode_sequence = 0x03;    // Off/Low/High/Auto
   config.fan_control.percent_setting   = static_cast<uint8_t>(0);  // Off initially
   config.fan_control.percent_current   = 0;
   return esp_matter::endpoint::fan::create(node, &config, 0x00, priv_data);
+  return esp_matter::endpoint::fan::create(node, &config, 0x00, priv_data);
 }
 
-// ---- ISR latch ----
+// ---- On/Off Light endpoint factory ----
 
-static volatile bool s_button_pressed = false;
-
-static void IRAM_ATTR button_isr_handler(void *) {
-  s_button_pressed = true;
+esp_matter::endpoint_t *create_on_off_light_endpoint(
+    esp_matter::node_t *node, void *priv_data) {
+  esp_matter::endpoint::on_off_light::config_t config;
+  config.on_off.on_off = false;
+  return esp_matter::endpoint::on_off_light::create(node, &config, 0x00, priv_data);
 }
+
+// ---- ISR latches (one per physical button) ----
+
+static volatile bool s_fan_button_pressed  = false;
+static volatile bool s_lamp_button_pressed = false;
+
+static void IRAM_ATTR fan_button_isr_handler(void *)  { s_fan_button_pressed  = true; }
+static void IRAM_ATTR lamp_button_isr_handler(void *) { s_lamp_button_pressed = true; }
 
 extern "C" {
 
@@ -53,6 +65,9 @@ void delay_ms(uint32_t ms) {
 }
 
 esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode) {
+  // Update FanMode (0x0000). PercentSetting is null (SPD disabled) so no sync needed.
+  // esp_matter_attr_val_t val = esp_matter_uint8(fan_mode);
+  // return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000000, &val);
   // Update FanMode (0x0000)
   esp_matter_attr_val_t val = esp_matter_uint8(fan_mode);
   esp_err_t err = esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000000, &val);
@@ -66,7 +81,13 @@ esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode) {
   return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000002, &val);
 }
 
-void setup_button_listen_gpio(int32_t gpio_num) {
+esp_err_t matter_onoff_update(uint16_t endpoint_id, bool on) {
+  // Update OnOff (0x0000) on the OnOff cluster (0x0006).
+  esp_matter_attr_val_t val = esp_matter_bool(on);
+  return esp_matter::attribute::update(endpoint_id, 0x00000006, 0x00000000, &val);
+}
+
+void setup_fan_button_listen_gpio(int32_t gpio_num) {
   gpio_config_t cfg = {};
   cfg.pin_bit_mask = 1ULL << gpio_num;
   cfg.mode = GPIO_MODE_INPUT;
@@ -74,13 +95,33 @@ void setup_button_listen_gpio(int32_t gpio_num) {
   cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
   cfg.intr_type = GPIO_INTR_NEGEDGE;
   gpio_config(&cfg);
-  gpio_install_isr_service(0);
-  gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), button_isr_handler, nullptr);
+  gpio_install_isr_service(0);  // installs the service; call this before setup_lamp_button_listen_gpio
+  gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), fan_button_isr_handler, nullptr);
 }
 
-bool matter_button_was_pressed(void) {
-  if (s_button_pressed) {
-    s_button_pressed = false;
+bool matter_fan_button_was_pressed(void) {
+  if (s_fan_button_pressed) {
+    s_fan_button_pressed = false;
+    return true;
+  }
+  return false;
+}
+
+void setup_lamp_button_listen_gpio(int32_t gpio_num) {
+  gpio_config_t cfg = {};
+  cfg.pin_bit_mask = 1ULL << gpio_num;
+  cfg.mode = GPIO_MODE_INPUT;
+  cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+  cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  cfg.intr_type = GPIO_INTR_NEGEDGE;
+  gpio_config(&cfg);
+  // gpio_install_isr_service already called by setup_fan_button_listen_gpio
+  gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), lamp_button_isr_handler, nullptr);
+}
+
+bool matter_lamp_button_was_pressed(void) {
+  if (s_lamp_button_pressed) {
+    s_lamp_button_pressed = false;
     return true;
   }
   return false;

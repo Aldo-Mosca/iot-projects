@@ -46,5 +46,5 @@ extern "C" char *strdup(const char *s1);
 
 // Swift Matter interface
 // ======================
-
+#include "led_driver.h"   // ← must be here according to claude.ai (quotes or "<>" we'll see...)
 #include "../Matter/MatterInterface.h"

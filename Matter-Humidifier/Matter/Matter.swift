@@ -143,6 +143,20 @@ extension Matter {
 }
 
 extension Matter {
+  class OnOffLight: Endpoint {
+    override init(node: Node) {
+      super.init(node: node)
+      let light = MatterLight(node.innerNode)
+      self.id = Int(light.id)
+    }
+
+    func update(_ on: Bool) {
+      matter_onoff_update(UInt16(id), on)
+    }
+  }
+}
+
+extension Matter {
   class Fan: Endpoint {
     override init(node: Node) {
       super.init(node: node)

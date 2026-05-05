@@ -125,6 +125,23 @@ struct Endpoint: MatterEndpoint {
   }
 }
 
+struct MatterLight: MatterConreteEndpoint {
+  // Matter spec device type ID for On/Off Light (0x0100).
+  static var deviceTypeId: UInt32 { 0x0100 }
+
+  var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>
+
+  init(_ node: RootNode) {
+    endpoint = create_on_off_light_endpoint(
+      node.node, Unmanaged.passRetained(node.context).toOpaque())
+    _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] = MatterLight.deviceTypeId
+  }
+
+  init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>) {
+    self.endpoint = endpoint
+  }
+}
+
 struct MatterFan: MatterConreteEndpoint {
   // Matter spec device type ID for Fan (0x0044).
   static var deviceTypeId: UInt32 { 0x0044 }

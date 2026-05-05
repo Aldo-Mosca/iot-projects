@@ -1,23 +1,28 @@
 // Hardware K1 cycle: Off(0) → High(1) → Low(2) → Night(3) → Off(0)
 //
-// Apple Home sends PercentSetting (slider) writes; FanMode is never used for UI.
+// FanModeSequence 0x02 = Off / Low / High  (no Auto, no slider)
+// Apple Home sends FanMode (0x0000) writes via discrete mode buttons.
+// PercentSetting is null so no speed slider is rendered.
 //
-// FanModeSequence 0x03 = Off / Low / High / Auto
+// FanMode ↔ hardware state:
+//   Off (0)  → hw Off(0)
+//   Low (1)  → hw Low(2)
+//   High (3) → hw High(1)
 //
-// PercentSetting ↔ hardware state:
-//   0%    → hw Off(0)    FanMode Off(0)
-//   33%   → hw Low(2)    FanMode Low(1)
-//   67%   → hw High(1)   FanMode High(3)
-//   67%   → hw Night(3)  FanMode Med(2)  ← Night has no named slider position;
-//                                           reports back as High so slider stays
-//                                           at a valid anchor. Physical button only.
-//
-// Slider ranges → hardware (incoming from Apple Home):
-//   0     → Off
-//   1–50  → Low
-//   51+   → High   (Night not reachable from slider)
+// Night (hw 3) is unreachable from Apple Home — physical button only.
+// When Night is active, Matter reports FanMode Low (1) as the closest anchor.
 
-let modeForHardwareState: [UInt8] = [0, 3, 1, 2]  // hw index → FanMode value
+let modeForHardwareState: [UInt8] = [0, 3, 1, 1]  // hw index → FanMode value
+// hw Off(0)→0, hw High(1)→3, hw Low(2)→1, hw Night(3)→1
+
+func hardwareStateForFanMode(_ mode: UInt8) -> UInt8 {
+  switch mode {
+  case 0:  return 0  // Off
+  case 1:  return 2  // Low
+  case 3:  return 1  // High
+  default: return 0  // ignore unknown modes
+  }
+}
 
 func hardwareStateForPercent(_ percent: UInt8) -> UInt8 {
   switch percent {
@@ -29,13 +34,19 @@ func hardwareStateForPercent(_ percent: UInt8) -> UInt8 {
 
 @_cdecl("app_main")
 func main() {
-  print("Hello, Embedded Swift! (Humidifier / Fan device)")
+  var targetHw: UInt8 = 0
 
-  let powerButton = ButtonShunt(gpio: powerButtonGPIO)
-  setup_button_listen_gpio(buttonListenGPIO)
+  print("Hello, Embedded Swift! (Humidifier / Fan device) 🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰")
 
-  // Assumed hardware state. On boot the humidifier is assumed Off.
-  var hwState: UInt8 = 0
+  let fanButton  = ButtonShunt(gpio: fanButtonGPIO)
+  setup_fan_button_listen_gpio(fanListenGPIO)
+
+  let lampButton = ButtonShunt(gpio: lampButtonGPIO)
+  setup_lamp_button_listen_gpio(lampListenGPIO)
+
+  // Assumed hardware states on boot.
+  var hwState: UInt8 = 0   // fan: Off
+  var lampIsOn: Bool = false
 
   // (1) Create a Matter root node
   let rootNode = Matter.Node()
@@ -44,19 +55,35 @@ func main() {
   // (2) Create a Fan endpoint (device type 0x0044)
   let fanEndpoint = Matter.Fan(node: rootNode)
   fanEndpoint.eventHandler = { event in
-    // Apple Home sends PercentSetting writes; ignore everything else.
-    guard case .percentSetting = event.attribute else { return }
-    let percent = UInt8(event.value & 0xFF)
-    let targetHw = hardwareStateForPercent(percent)
+    switch event.attribute {
+      case .fanMode:
+          targetHw = hardwareStateForFanMode(UInt8(event.value & 0xFF))
+      case .percentSetting:
+          targetHw = hardwareStateForPercent(UInt8(event.value & 0xFF))
+      default:
+          return
+    }
     let presses = (Int(targetHw) - Int(hwState) + 4) % 4
     for i in 0..<presses {
       if i > 0 { delay_ms(200) }
-      powerButton.press()
+      fanButton.press()
     }
     hwState = targetHw
   }
 
-  // (3) Add the endpoint to the node
+  // (2.5) Create an OnOff Light endpoint for the lamp (K1 button)
+  let lightEndpoint = Matter.OnOffLight(node: rootNode)
+  lightEndpoint.eventHandler = { event in
+    guard case .onOff = event.attribute else { return }
+    let targetOn = event.value != 0
+    if targetOn != lampIsOn {
+      lampButton.press()
+      lampIsOn = targetOn
+    }
+  }
+
+  // (3) Add the endpoints to the node
+  rootNode.addEndpoint(lightEndpoint)
   rootNode.addEndpoint(fanEndpoint)
 
   // (4) Start Matter
@@ -64,14 +91,18 @@ func main() {
   app.rootNode = rootNode
   app.start()
 
-  // Main loop: poll for physical K1 presses and sync state back to Matter.
-  // matter_fan_update_mode() updates both FanMode and PercentSetting so the
-  // Apple Home slider reflects the physical change.
+  // Main loop: poll physical buttons and sync state back to Matter.
   // Keep local variables alive — workaround for swift-matter-examples issue #10.
   while true {
-    if matter_button_was_pressed() {
+    if matter_fan_button_was_pressed() {
+      print("button pressed yay 👍 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏  ")
       hwState = (hwState + 1) % 4
+      print("hwState is: \(hwState)")
       fanEndpoint.updateFanMode(modeForHardwareState[Int(hwState)])
+    }
+    if matter_lamp_button_was_pressed() {
+      lampIsOn = !lampIsOn
+      lightEndpoint.update(lampIsOn)
     }
     delay_ms(200)
   }

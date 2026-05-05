@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Matter Implementation Resources</title>
+  <style>
+    :root { --bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--accent:#6c8ef5;--accent2:#a78bfa;--text:#e2e8f0;--muted:#8892a4;--border:#2d3349;--tag-bg:#1e2a45;--tag-text:#7eb8f7;--highlight:#2a2040; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.6;padding:2rem 1rem}
+    .page{max-width:860px;margin:0 auto}
+    header{margin-bottom:2.5rem;border-bottom:1px solid var(--border);padding-bottom:1.5rem}
+    header h1{font-size:1.8rem;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:.4rem}
+    header p{color:var(--muted);font-size:.95rem}
+    .note{background:var(--highlight);border:1px solid var(--accent2);border-left:4px solid var(--accent2);border-radius:8px;padding:.9rem 1.2rem;margin-bottom:2rem;font-size:.9rem;color:#c4b5fd}
+    .section{margin-bottom:2.5rem}
+    .sh{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap}
+    .sh h2{font-size:1.15rem;font-weight:600;color:var(--text)}
+    .tag{font-size:.72rem;font-weight:600;padding:.2rem .55rem;border-radius:20px;background:var(--tag-bg);color:var(--tag-text);letter-spacing:.04em;text-transform:uppercase}
+    .rel{font-size:.72rem;font-weight:600;padding:.2rem .55rem;border-radius:20px;letter-spacing:.04em;text-transform:uppercase}
+    .rel.h{background:#1a3a2a;color:#4ade80}
+    .rel.m{background:#2a2a1a;color:#facc15}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1.3rem;margin-bottom:.75rem;transition:border-color .2s}
+    .card:hover{border-color:var(--accent)}
+    .ct{font-weight:600;font-size:.97rem;margin-bottom:.35rem}
+    .cd{color:var(--muted);font-size:.875rem;margin-bottom:.75rem;line-height:1.55}
+    .links{display:flex;flex-wrap:wrap;gap:.5rem}
+    a.btn{display:inline-flex;align-items:center;padding:.35rem .85rem;border-radius:6px;font-size:.82rem;font-weight:500;text-decoration:none;background:var(--surface2);color:var(--accent);border:1px solid var(--border);transition:background .15s,border-color .15s}
+    a.btn:hover{background:var(--tag-bg);border-color:var(--accent)}
+    hr{border:none;border-top:1px solid var(--border);margin:2rem 0}
+    footer{text-align:center;color:var(--muted);font-size:.8rem;margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border)}
+    code{background:var(--surface2);padding:.1em .4em;border-radius:4px;font-size:.85em;font-family:"SF Mono",Menlo,monospace;color:#93c5fd}
+  </style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Matter Implementation Resources</h1>
+    <p>Reference links for Matter cluster &amp; device implementation — Matter-Humidifier project</p>
+  </header>
+  <div class="note">⭐ <strong>For the humidifier specifically:</strong> prioritise the <code>mode_select</code> cluster in the esp-matter SDK docs — designed for devices cycling through named modes (Hi / Low / Night / Off). The Fan cluster is also worth a look for its multi-mode semantics.</div>
+
+  <div class="section">
+    <div class="sh"><h2>esp-matter — Official SDK</h2><span class="tag">C++</span><span class="rel h">Most Relevant</span></div>
+    <div class="card">
+      <div class="ct">ESP-Matter Developer Guide</div>
+      <div class="cd">Official Espressif SDK docs. The <code>mode_select</code> cluster section is directly applicable to the humidifier. Also covers custom cluster creation with <code>cluster::create(endpoint, custom_cluster_id, CLUSTER_FLAG_SERVER)</code>.</div>
+      <div class="links"><a class="btn" href="https://docs.espressif.com/projects/esp-matter/en/latest/esp32/developing.html" target="_blank">↗ Developer Guide</a></div>
+    </div>
+    <div class="card">
+      <div class="ct">GitHub Issue #378 — Thermostat Endpoint Pattern</div>
+      <div class="cd">The canonical pattern: create <code>node</code> → build <code>config_t</code> → call <code>endpoint::create()</code> → fetch cluster handle with <code>cluster::get(endpoint, ClusterId)</code> → add optional features. Directly translatable to a humidifier endpoint.</div>
+      <div class="links"><a class="btn" href="https://github.com/espressif/esp-matter/issues/378" target="_blank">↗ Issue #378</a></div>
+    </div>
+    <div class="card">
+      <div class="ct">GitHub Issue #1409 — Reading &amp; Writing Cluster Attributes</div>
+      <div class="cd">Demonstrates the <code>attribute::get_val</code> / <code>attribute::update</code> pattern at runtime. Useful for syncing humidifier state back to Apple Home.</div>
+      <div class="links"><a class="btn" href="https://github.com/espressif/esp-matter/issues/1409" target="_blank">↗ Issue #1409</a></div>
+    </div>
+  </div>
+
+  <hr />
+
+  <div class="section">
+    <div class="sh"><h2>Arduino ESP32 Matter Library</h2><span class="tag">C++</span><span class="rel h">High</span></div>
+    <div class="card">
+      <div class="ct">Arduino ESP32 Matter Examples</div>
+      <div class="cd">Higher-level wrapper over esp-matter. Working examples for <strong>Matter Fan</strong> (speed + mode control), <strong>Matter Humidity Sensor</strong>, and <strong>Matter Thermostat</strong>. Good for understanding how modes/states map to Matter attributes before dropping to raw esp-matter API calls.</div>
+      <div class="links">
+        <a class="btn" href="https://docs.espressif.com/projects/arduino-esp32/en/latest/matter/matter.html" target="_blank">↗ Arduino ESP32 Matter Docs</a>
+        <a class="btn" href="https://github.com/espressif/arduino-esp32/tree/master/libraries/Matter/examples" target="_blank">↗ Examples on GitHub</a>
+      </div>
+    </div>
+  </div>
+
+  <hr />
+
+  <div class="section">
+    <div class="sh"><h2>matter.js</h2><span class="tag">TypeScript</span><span class="rel m">Data Model Reference</span></div>
+    <div class="card">
+      <div class="ct">matter.js — Full Matter Protocol in TypeScript</div>
+      <div class="cd">Complete TypeScript implementation of the Matter spec. Strong typing across all clusters — the best place to browse what attributes and commands a cluster actually exposes before writing C++ or Swift.</div>
+      <div class="links">
+        <a class="btn" href="https://github.com/project-chip/matter.js" target="_blank">↗ GitHub — matter.js</a>
+        <a class="btn" href="https://github.com/project-chip/matter.js/tree/main/packages/matter.js/src/cluster/definitions" target="_blank">↗ Cluster Definitions</a>
+      </div>
+    </div>
+  </div>
+
+  <hr />
+
+  <div class="section">
+    <div class="sh"><h2>rs-matter</h2><span class="tag">Rust</span><span class="rel m">Structural Reference</span></div>
+    <div class="card">
+      <div class="ct">rs-matter Cluster Implementation Patterns</div>
+      <div class="cd">Detailed documentation of cluster implementation patterns — from simple data-driven to complex coupled clusters (e.g. LevelControl + OnOff). The Fan cluster example shows how to implement hooks, configure attributes, and chain the handler onto an endpoint. Maps well to the Swift shim architecture.</div>
+      <div class="links">
+        <a class="btn" href="https://github.com/project-chip/rs-matter" target="_blank">↗ GitHub — rs-matter</a>
+        <a class="btn" href="https://github.com/project-chip/rs-matter/blob/main/docs/Matter_clusters-Implementation_usage_and_support.md" target="_blank">↗ Cluster Patterns Doc</a>
+      </div>
+    </div>
+  </div>
+
+  <hr />
+
+  <div class="section">
+    <div class="sh"><h2>connectedhomeip — Official CHIP SDK</h2><span class="tag">C++</span><span class="rel m">Spec Reference</span></div>
+    <div class="card">
+      <div class="ct">Implementing New Clusters &amp; Device Types</div>
+      <div class="cd">Most spec-correct reference. Covers the full flow: ember attribute storage, <code>PluginServerCallback</code>, <code>AttributeAccessInterfaceRegistry</code> overrides, and bypassing ember storage. Use this to know what's mandatory vs. optional per the spec.</div>
+      <div class="links">
+        <a class="btn" href="https://project-chip.github.io/connectedhomeip-doc/cluster_and_device_type_dev/cluster_and_device_type_dev.html" target="_blank">↗ Cluster Dev Guide</a>
+        <a class="btn" href="https://project-chip.github.io/connectedhomeip-doc/examples/index.html" target="_blank">↗ All SDK Examples</a>
+        <a class="btn" href="https://project-chip.github.io/connectedhomeip-doc/index.html" target="_blank">↗ Matter Docs Home</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">nRF Connect All-Clusters Example</div>
+      <div class="cd">Nordic Semiconductor's all-clusters example implements many ZCL clusters across multiple endpoints. Useful reference for how a real multi-cluster device is structured.</div>
+      <div class="links"><a class="btn" href="https://project-chip.github.io/connectedhomeip-doc/examples/all-clusters-app/nrfconnect/README.html" target="_blank">↗ nRF All-Clusters README</a></div>
+    </div>
+  </div>
+
+  <hr />
+
+  <div class="section">
+    <div class="sh"><h2>Community Projects</h2><span class="tag">C++</span><span class="rel m">Real Hardware</span></div>
+    <div class="card">
+      <div class="ct">matter-esp32-si7021 — Temp/Humidity Sensor on ESP32</div>
+      <div class="cd">Real working project: ESP32 + Si7021 sensor as a Matter temperature/humidity device. Good for seeing how sensor readings are scaled and fed into Matter attribute updates.</div>
+      <div class="links"><a class="btn" href="https://github.com/YOGYUI/matter-esp32-si7021" target="_blank">↗ GitHub</a></div>
+    </div>
+    <div class="card">
+      <div class="ct">Temperature-Matter — DHT22 on ESP32-C3 + Apple Home</div>
+      <div class="cd">Community project on the same ESP32-Cx family, commissioned into Apple Home. Hit the ×100 integer scaling issue with HomeKit — same fabric as this project. Fix and discussion in the forum thread.</div>
+      <div class="links">
+        <a class="btn" href="https://github.com/osterhult/Temperature-Matter" target="_blank">↗ GitHub</a>
+        <a class="btn" href="https://esp32.com/viewtopic.php?t=38395" target="_blank">↗ Forum Thread</a>
+      </div>
+    </div>
+  </div>
+
+  <footer>Generated by Claude &middot; Matter-Humidifier Project &middot; April 2026</footer>
+</div>
+</body>
+</html>

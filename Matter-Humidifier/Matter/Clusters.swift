@@ -184,7 +184,8 @@ struct FanControl: MatterConcreteCluster {
   struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
     var rawValue: UInt32
 
-    static var fanMode: AttributeID<FanModeValue> { .init(rawValue: 0x0000_0000) }
+    static var fanMode: AttributeID<FanModeValue> { .init(rawValue: 0x0000_0003) }
+    // static var fanModeSequence: AttributeID<FanModeSequenceValue> { .init(rawValue: 0x0000_0003) }  // OffLowHighAuto
     static var percentSetting: AttributeID<PercentSettingValue> { .init(rawValue: 0x0000_0002) }
   }
 

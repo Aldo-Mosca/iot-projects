@@ -142,6 +142,14 @@ See [`SETUP_ESP541_ENV.md`](./SETUP_ESP541_ENV.md) for the v5.4.1 + v1.4 setup p
 
 ## Embedded Swift Exploration (Working ✅)
 
+> **Session update — 2026-05-04**: Clarified hardware button assignments (K1 = lamp, K2 = fan mode). Renamed all button-related symbols to be K1/K2-specific. Wired up the `Matter.OnOffLight` endpoint fully: K1 `ButtonShunt` shunt + ISR listener, event handler presses K1 only when target state differs from current, main loop polls `matter_lamp_button_was_pressed()` and calls `lightEndpoint.update()` to sync back. Fan (K2) functionality unchanged. See OnOff Light section below.
+
+> **Session update — 2026-05-03**: Three changes to the Fan endpoint, plus scaffolding for an OnOff Light endpoint to control the onboard LED.
+> 1. **FanModeSequence → `0x02`** (Off/Low/High, no Auto). Previous value `0x03` exposed an Auto mode that doesn't exist on the hardware.
+> 2. **Disabled speed slider** — `percent_setting = nullptr` makes the PercentSetting attribute null; the SPD feature bit stays 0 because `feature::multi_speed::add()` is never called. Apple Home should now render discrete mode buttons instead of a continuous slider.
+> 3. **Event handler switched from PercentSetting → FanMode** — When SPD is disabled, Apple Home sends FanMode (0x0000) writes, not PercentSetting (0x0002). Updated `hardwareStateForFanMode()` maps `0→Off, 1→Low, 3→High`; Night (hw=3) reports back as FanMode=Low (unchanged). `modeForHardwareState` updated to `[0, 3, 1, 1]` — Night now reports as Low (was Med/2).
+> 4. **OnOff Light endpoint scaffolded** — Added `create_on_off_light_endpoint()` C++ shim, `MatterLight` struct (`0x0100` device type), and `Matter.OnOff` Swift class with `update(_ on: Bool)` method. Open issue: `Matter.OnOff` name collides with the `OnOff` cluster struct already in scope — three SourceKit errors in `Matter.swift` lines 91–93 (`as(OnOff.self)`, `OnOff.AttributeID`, `OnOff.OnOffState` all resolve to the new class instead of the cluster struct). Needs a rename before it compiles. See OnOff Light section below.
+
 > **Session update — 2026-04-18 (2)**: Switched to Fan device type (`0x002B`). Replaced On/Off Plug-in Unit endpoint with Fan Control cluster. Full 4-state machine (`Off/High/Low/Night`) with K1 press-count logic, bidirectional Matter sync, and physical button press detection via ISR-latched GPIO. Night maps to FanMode=Low (intentionally lossy; future OnOff cluster for LED will distinguish). See Fan Device Type section below.
 
 > **Session update — 2026-04-18**: Replaced relay approach with GPIO-to-button shunt. `Relay.swift` → `ButtonShunt.swift`. Uses open-drain GPIO to simulate a momentary button press across the green board's power button contacts. No relay module needed.
@@ -262,6 +270,61 @@ Presses are fired with 200 ms between each. Logic lives in `Main.swift`, not in 
 - `main/ButtonShunt.swift` — added `buttonListenGPIO` constant (GPIO5, TODO: confirm)
 - `main/Main.swift` — full state machine with mapping tables, press-count logic, 200 ms polling loop
 
+### Fan Endpoint — Slider → Discrete Buttons (2026-05-03)
+
+**Problem:** Apple Home was rendering a continuous speed slider for the Fan endpoint. The slider sends PercentSetting (0x0002) writes, not FanMode writes. The three-state hardware (Off/Low/High) maps cleanly to discrete buttons, not a slider.
+
+**Fix — two things required together:**
+1. `percent_setting = nullptr` — sets the PercentSetting attribute to null in the data model. A null PercentSetting signals "no speed setting available."
+2. No call to `feature::multi_speed::add()` — the SPD feature bit in FeatureMap stays 0. SPD is what tells Apple Home to render a slider; without it, discrete mode buttons are shown.
+
+**Event handler update:** With SPD disabled, Apple Home sends FanMode (0x0000) writes. The event handler was updated from `guard case .percentSetting` to `guard case .fanMode`. `hardwareStateForPercent()` replaced by `hardwareStateForFanMode()`.
+
+**FanModeSequence `0x01` vs `0x02`:** The cluster-enums.h ZAP-generated value for Off/Low/High is `0x01` (`kOffLowHigh`). An earlier session entry records this; the current code now uses `0x02` — needs verification against the SDK header.
+
+---
+
+### OnOff Light Endpoint — K1 (Lamp Button) (2026-05-03 → 2026-05-04)
+
+**Goal:** Expose the lamp (controlled by K1 on the green board) as a separate Matter OnOff Light endpoint (`0x0100`) so Apple Home can toggle it independently of the humidifier fan states. This also lets Apple Home distinguish Low (fan=low, lamp on) from Night (fan=low, lamp off), which is intentionally lossy in the Fan endpoint alone.
+
+**Hardware assignment clarified (2026-05-04):** K1 = lamp button, K2 = fan mode button. All button-related symbols renamed accordingly throughout `ButtonShunt.swift`, `MatterInterface.h/.cpp`, and `Main.swift`.
+
+**Matter layer (2026-05-03):**
+- `Matter/MatterInterface.h` — declared `create_on_off_light_endpoint()` (C++) and `matter_onoff_update()` (extern "C")
+- `Matter/MatterInterface.cpp` — `create_on_off_light_endpoint()` uses `esp_matter::endpoint::on_off_light::create()`, starts off; `matter_onoff_update()` writes `esp_matter_bool(on)` to cluster `0x0006` attribute `0x0000`
+- `Matter/Node.swift` — added `MatterLight` struct (device type `0x0100`), same registry pattern as `MatterFan`
+- `Matter/Matter.swift` — added `Matter.OnOffLight` class (renamed from `Matter.OnOff` to avoid shadowing the `OnOff` cluster struct) with `update(_ on: Bool)` method
+
+**Name collision resolved (2026-05-03):** `Matter.OnOff` was renamed to `Matter.OnOffLight`. The `OnOff` cluster struct is used inside `Matter.Endpoint.Attribute.init?(cluster:attribute:)` via `cluster.as(OnOff.self)` — having a class with the same name in scope caused three SourceKit errors. Rename fixed all three.
+
+**ISR and GPIO (2026-05-04):**
+- `MatterInterface.cpp` — second independent ISR latch (`s_lamp_button_pressed` / `lamp_button_isr_handler`) alongside the existing fan latch. `setup_lamp_button_listen_gpio()` skips `gpio_install_isr_service()` since fan setup installs it first.
+- `ButtonShunt.swift` — added `lampButtonGPIO` (K1 shunt output, TODO: confirm pin) and `lampListenGPIO` (K1 listen input, TODO: confirm pin)
+
+**`Main.swift` wiring (2026-05-04):**
+```swift
+let lampButton = ButtonShunt(gpio: lampButtonGPIO)
+setup_lamp_button_listen_gpio(lampListenGPIO)
+var lampIsOn: Bool = false
+
+lightEndpoint.eventHandler = { event in
+  guard case .onOff = event.attribute else { return }
+  let targetOn = event.value != 0
+  if targetOn != lampIsOn {      // only press if state actually changes
+    lampButton.press()
+    lampIsOn = targetOn
+  }
+}
+// in main loop:
+if matter_lamp_button_was_pressed() {
+  lampIsOn = !lampIsOn
+  lightEndpoint.update(lampIsOn)
+}
+```
+
+**State-drift note:** Same limitation as the fan — XIAO has no feedback line from the green board, so `lampIsOn` tracks assumed state. If K1 is pressed physically when Matter thinks the lamp is already on, the toggle will desync. Pressing twice in Apple Home re-syncs.
+
 ### Button Shunt — Design Notes (2026-04-18)
 
 **Why not relay:** The original plan was to intercept the VRK switching signal with a 5V relay. Discarded in favour of simulating a button press on the green board's control panel — simpler wiring, no relay module required, and the green board's MCU stays in charge of the humidifier state machine (water level sensor, safety logic, etc.).
@@ -292,24 +355,32 @@ Open-drain is important: if the button has a pull-up resistor on the green board
 ### Hardware
 
 - [ ] Source compact buck converter (MP1584 or LM2596-based, 12V→5V, ≥1A)
-- [ ] **Confirm GPIO pins** — update `powerButtonGPIO` and `buttonListenGPIO` in `ButtonShunt.swift` (currently GPIO4 / GPIO5, unverified)
-- [ ] Wire output GPIO (open-drain) across K1 button contacts on green board
-- [ ] Wire input GPIO to K1 button line for physical press detection
-- [ ] Test button press simulation and physical press detection
+- [ ] **Confirm GPIO pins** for all four signals and update `ButtonShunt.swift`:
+  - `lampButtonGPIO` — K1 shunt output (currently GPIO0, unverified)
+  - `lampListenGPIO` — K1 listen input (currently GPIO1, unverified)
+  - `fanButtonGPIO` — K2 shunt output (currently GPIO2, unverified)
+  - `fanListenGPIO` — K2 listen input (currently GPIO3, unverified)
+- [ ] Wire K1 shunt output (open-drain) across lamp button contacts on green board
+- [ ] Wire K1 listen input to K1 button line for physical press detection
+- [ ] Wire K2 shunt output (open-drain) across fan mode button contacts on green board
+- [ ] Wire K2 listen input to K2 button line for physical press detection
 
-### Firmware (Embedded Swift path — code complete, not yet flashed)
+### Firmware (Embedded Swift path)
 
 - [x] Resolve esp-matter version/commit mismatch — upgraded to release/v1.4 ✅ 2026-04-12
 - [x] Get `smart-light` example building and commissioning into Apple Home ✅ 2026-03-30
 - [x] Scaffold `Matter-Humidifier/` from `smart-light` ✅ 2026-04-12
 - [x] Fix `get_device_type_ids` removal with Swift registry approach ✅ 2026-04-12
 - [x] Switch to Fan device type (`0x002B`), Fan Control cluster (`0x0202`) ✅ 2026-04-18
-- [x] 4-state machine with K1 press-count logic and physical button sync ✅ 2026-04-18
+- [x] 4-state machine with K2 press-count logic and physical button sync ✅ 2026-04-18
 - [x] Button shunt (open-drain output) + physical press detection (ISR-latched input) ✅ 2026-04-18
-- [ ] **Confirm GPIO pin numbers and wire up**
-- [ ] **Build** — `get_esp541 && idf.py set-target esp32c6 && TOOLCHAINS=<nightly> idf.py build`
-- [ ] Flash and commission into Apple Home as Fan device
-- [ ] Test all four states (Off / High / Low / Night) via Apple Home and physical button
+- [x] Device pairs and is controllable in Apple Home ✅ 2026-05-01
+- [x] Disable speed slider — `percent_setting = nullptr`, SPD bit = 0, FanModeSequence = `0x02` ✅ 2026-05-03
+- [x] OnOff Light endpoint — `MatterLight`, `Matter.OnOffLight`, K1 ISR, `Main.swift` wiring ✅ 2026-05-04
+- [ ] **Confirm and update GPIO pin numbers** (see Hardware section above)
+- [ ] Flash and verify: discrete fan mode buttons (Off/Low/High) + separate lamp on/off in Apple Home
+- [ ] Test all four fan states (Off/High/Low/Night) via Apple Home and physical K2
+- [ ] Test lamp toggle via Apple Home and physical K1
 
 ### Notes App → DEVLOG workflow
 
