@@ -83,6 +83,10 @@ git clone -b v5.4.1 --depth 1 https://github.com/espressif/esp-idf.git \
 
 cd ~/Local-Documents/repos/IoT-projects/esp/esp-idf-v5.4.1
 git submodule update --init --depth 1
+export PATH="/opt/homebrew/bin:$PATH" # Ensure you get the correct python3 version. This is important inside the firewall
+
+export IDF_PATH=~/Documents/repos/iot-projects/esp/esp-idf-v5.4.1
+cd $IDF_PATH
 ./install.sh esp32c6
 ```
 
@@ -112,6 +116,11 @@ IDF-managed Python venv (`idf5.4_py3.14_env`) is on PATH. If you skip this,
 ```bash
 # Fresh terminal
 source ~/Local-Documents/repos/IoT-projects/esp/esp-idf-v5.4.1/export.sh
+ORRRRRR
+( 
+  cd esp-idf-v5.4.1
+  IDF_TOOLS_PATH=~/.espressif-v5.4.1 ./install.sh esp32c6
+)
 
 # Confirm correct Python (must NOT be /usr/bin or /opt/homebrew)
 which python3   # expected: ~/.espressif/python_env/idf5.4_py3.14_env/bin/python3

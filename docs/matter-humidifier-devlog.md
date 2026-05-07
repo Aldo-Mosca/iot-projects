@@ -354,12 +354,12 @@ Open-drain is important: if the button has a pull-up resistor on the green board
 
 ### Hardware
 
-- [ ] Source compact buck converter (MP1584 or LM2596-based, 12V→5V, ≥1A)
-- [ ] **Confirm GPIO pins** for all four signals and update `ButtonShunt.swift`:
-  - `lampButtonGPIO` — K1 shunt output (currently GPIO0, unverified)
-  - `lampListenGPIO` — K1 listen input (currently GPIO1, unverified)
-  - `fanButtonGPIO` — K2 shunt output (currently GPIO2, unverified)
-  - `fanListenGPIO` — K2 listen input (currently GPIO3, unverified)
+- [X] Source compact buck converter (MP1584 or LM2596-based, 12V→5V, ≥1A)
+- [X] **Confirm GPIO pins** for all four signals and update `ButtonShunt.swift`:
+  - `lampButtonGPIO` — K1 shunt output (currently GPIO0)
+  - `lampListenGPIO` — K1 listen input (currently GPIO1)
+  - `fanButtonGPIO` — K2 shunt output (currently GPIO2)
+  - `fanListenGPIO` — K2 listen input (currently GPI21)
 - [ ] Wire K1 shunt output (open-drain) across lamp button contacts on green board
 - [ ] Wire K1 listen input to K1 button line for physical press detection
 - [ ] Wire K2 shunt output (open-drain) across fan mode button contacts on green board
@@ -377,7 +377,7 @@ Open-drain is important: if the button has a pull-up resistor on the green board
 - [x] Device pairs and is controllable in Apple Home ✅ 2026-05-01
 - [x] Disable speed slider — `percent_setting = nullptr`, SPD bit = 0, FanModeSequence = `0x02` ✅ 2026-05-03
 - [x] OnOff Light endpoint — `MatterLight`, `Matter.OnOffLight`, K1 ISR, `Main.swift` wiring ✅ 2026-05-04
-- [ ] **Confirm and update GPIO pin numbers** (see Hardware section above)
+- [X] **Confirm and update GPIO pin numbers** (see Hardware section above)
 - [ ] Flash and verify: discrete fan mode buttons (Off/Low/High) + separate lamp on/off in Apple Home
 - [ ] Test all four fan states (Off/High/Low/Night) via Apple Home and physical K2
 - [ ] Test lamp toggle via Apple Home and physical K1
