@@ -65,7 +65,7 @@ void delay_ms(uint32_t ms) {
 }
 
 esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode) {
-  // Update FanMode (0x0000). PercentSetting is null (SPD disabled) so no sync needed.
+  // Update FanMode (0x0000). 
   // esp_matter_attr_val_t val = esp_matter_uint8(fan_mode);
   // return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000000, &val);
   // Update FanMode (0x0000)
@@ -75,10 +75,10 @@ esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode) {
   // Also sync PercentSetting (0x0002) so Apple Home slider reflects the state.
   // FanModeSequence is Off/Low/High/Auto; Night has no named slider position
   // so it reports back as High (67%) to keep the slider at a valid anchor.
-  // Mapping: Off=0%, Low=33%, Med(Night)=67%, High=67%
-  static const uint8_t kPercent[4] = {0, 33, 67, 67};
+  // Mapping: Off=0%, Low=30%, Med(Night)=60%, High=100%
+  static const uint8_t kPercent[4] = {0, 30, 60, 100};
   val = esp_matter_uint8(fan_mode < 4 ? kPercent[fan_mode] : 0);
-  return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000002, &val);
+  return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000006, &val);
 }
 
 esp_err_t matter_onoff_update(uint16_t endpoint_id, bool on) {

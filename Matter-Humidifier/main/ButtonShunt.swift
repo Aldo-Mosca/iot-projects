@@ -13,8 +13,8 @@ let lampListenGPIO: Int32 = 1
 let fanButtonGPIO: Int32 = 2
 
 // GPIO wired to K2 line as passive input — detects physical fan mode button presses.
-// TODO: confirm pin — XIAO ESP32-C6 D3 = GPIO3
-let fanListenGPIO: Int32 = 3
+// TODO: confirm pin — XIAO ESP32-C6 D3 = GPI21
+let fanListenGPIO: Int32 = 21      // WAS 3
 
 // Simulates a momentary button press by briefly pulling a GPIO low in open-drain mode.
 // Open-drain means: write 0 → actively pulls low (press); write 1 → high-impedance (release).
@@ -47,9 +47,9 @@ final class ButtonShunt {
   //   // END DEBUG
   // }
 
-  func press(durationMs: UInt32 = 1000) {
+  func press(durationMs: UInt32 = 100) {
     gpio_set_level(gpio_num_t(rawValue: gpio), 0)  // pull low — press
-    print("🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 ")
+    print("🚩 🚩 🚩 🚩 🚩 BUTTON PRESS \(gpio) 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 ")
     delay_ms(durationMs)
     gpio_set_level(gpio_num_t(rawValue: gpio), 1)  // release
     print("🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 🦄 ")

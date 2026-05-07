@@ -29,7 +29,7 @@ protocol MatterConcreteCluster: MatterCluster {
   static var clusterTypeId: ClusterID<Self> { get }
 }
 
-struct ClusterID<Cluster: MatterCluster>: RawRepresentable {
+struct ClusterID<Cluster: MatterCluster>: RawRepresentable {   // TODO: where does FanMode go?
   var rawValue: UInt32
 
   static var identify: ClusterID<Identify> { .init(rawValue: 0x0000_0003) }
@@ -62,7 +62,7 @@ struct Cluster: MatterCluster {
   }
 }
 
-struct Identify: MatterConcreteCluster {
+struct Identify: MatterConcreteCluster {      // TODO make one of these for FanMode?
   static var clusterTypeId: ClusterID<Self> { .identify }
   struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
     var rawValue: UInt32
@@ -185,7 +185,8 @@ struct FanControl: MatterConcreteCluster {
     var rawValue: UInt32
 
     static var fanMode: AttributeID<FanModeValue> { .init(rawValue: 0x0000_0003) }
-    // static var fanModeSequence: AttributeID<FanModeSequenceValue> { .init(rawValue: 0x0000_0003) }  // OffLowHighAuto
+    // TODO find the place where supported attributes are defined and add this:
+    // static var fanModeSequence: AttributeID<FanModeSequenceValue> { .init(rawValue: 0x0000_0001) }  // OffLowMidHighAuto
     static var percentSetting: AttributeID<PercentSettingValue> { .init(rawValue: 0x0000_0002) }
   }
 
@@ -195,3 +196,20 @@ struct FanControl: MatterConcreteCluster {
     self.cluster = cluster
   }
 }
+
+// TODO: Do I add struct ModeSelect: MatterConcreteCluster {} here?
+// Let's try. Then we walk backwards 
+// struct ModeSelect: MatterConcreteCluster {
+//   static var clusterTypeId: ClusterID<Self> { .modeSelect }
+//   struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
+//     var rawValue: UInt32
+
+//     static var description: AttributeID<Description> { .init(rawValue: 0x000_0000) }
+//     static var supportedModes: AttributeID<SupportedModes> { .init(rawValue: 0x0000_0002) }
+//   }
+//   var cluster: UnsafeMutablePointer<esp_matter.cluster_t>
+
+//   init(_ cluster: UnsafeMutablePointer<esp_matter.cluster_t>) {
+//     self.cluster = cluster
+//   }
+// }

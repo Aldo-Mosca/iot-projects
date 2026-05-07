@@ -168,6 +168,9 @@ extension Matter {
     func updateFanMode(_ mode: UInt8) {
       matter_fan_update_mode(UInt16(id), mode)
     }
+    // func updateFanSpeed(_ speed: UInt8) {
+    //   matter_fan_update_mode(UInt16(id), mode)
+    // }
   }
 }
 
