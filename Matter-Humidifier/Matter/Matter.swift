@@ -85,6 +85,7 @@ extension Matter {
       case colorControl(ColorControlAttribute)
       case fanMode
       case percentSetting
+      case currentMode
       case unknown(UInt32)
 
       init?(cluster: Cluster, attribute: UInt32) {
@@ -126,6 +127,12 @@ extension Matter {
             self = .fanMode
           case FanControl.AttributeID<FanControl.PercentSettingValue>.percentSetting.rawValue:
             self = .percentSetting
+          default: return nil
+          }
+        } else if cluster.as(ModeSelect.self) != nil {
+          switch attribute {
+          case ModeSelect.AttributeID<ModeSelect.CurrentMode>.currentMode.rawValue:
+            self = .currentMode
           default: return nil
           }
         } else {
@@ -175,6 +182,21 @@ extension Matter {
 }
 
 extension Matter {
+  class ModeSelector: Endpoint {
+    override init(node: Node) {
+      super.init(node: node)
+
+      let modeSelect = MatterModeSelect(node.innerNode)
+      self.id = Int(modeSelect.id)
+    }
+
+    func updateCurrentMode(_ mode: UInt8) {
+      matter_mode_select_update_current_mode(UInt16(id), mode)
+    }
+  }
+}
+
+extension Matter {
   class Application {
     var rootNode: Node? = nil
 
@@ -219,6 +241,7 @@ func print(_ a: Matter.Endpoint.Attribute) {
     print(")")
   case .fanMode: print("fanMode")
   case .percentSetting: print("percentSetting")
+  case .currentMode: print("currentMode")
   case .unknown: print("unknown")
   }
 }

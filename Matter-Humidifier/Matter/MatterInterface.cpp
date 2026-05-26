@@ -10,6 +10,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "BridgingHeader.h"
+#include <app/clusters/mode-select-server/supported-modes-manager.h>
+#include <cstring>
 
 esp_err_t esp_matter::attribute::set_callback_shim(callback_t_shim callback) {
   return set_callback((callback_t)callback);
@@ -50,6 +52,70 @@ esp_matter::endpoint_t *create_on_off_light_endpoint(
   return esp_matter::endpoint::on_off_light::create(node, &config, 0x00, priv_data);
 }
 
+// ---- Mode Select endpoint factory ----
+//
+// Mode Select cluster (0x0050) requires a globally-registered SupportedModesManager
+// to validate ChangeToMode commands. We hardcode 5 modes that match the hardware
+// K1 cycle so currentMode == hwState directly:
+//   0 = Off, 1 = On, 2 = 1H, 3 = 3H, 4 = 6H
+
+namespace {
+
+namespace ModeSel = chip::app::Clusters::ModeSelect;
+using SemanticTagType = ModeSel::Structs::SemanticTagStruct::Type;
+using ModeOptionType  = ModeSel::Structs::ModeOptionStruct::Type;
+
+// One placeholder semantic tag, shared by all modes (mfgCode=0, value=0).
+// Apple Home renders modes by label; semanticTags is required by spec but
+// the values here aren't interpreted by any client we care about.
+SemanticTagType sTags[] = {
+  { static_cast<chip::VendorId>(0), static_cast<uint16_t>(0) },
+};
+
+const ModeOptionType sHumidifierModes[5] = {
+  { chip::CharSpan("Off", 0), 0,
+    chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
+  { chip::CharSpan("On",  1), 1,
+    chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
+  { chip::CharSpan("1H",  2), 2,
+    chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
+  { chip::CharSpan("3H",  3), 3,
+    chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
+  { chip::CharSpan("6H",  4), 4,
+    chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
+};
+
+class HumidifierModesManager : public ModeSel::SupportedModesManager {
+public:
+  ModeOptionsProvider getModeOptionsProvider(chip::EndpointId) const override {
+    return ModeOptionsProvider(sHumidifierModes, sHumidifierModes + 5);
+  }
+  chip::Protocols::InteractionModel::Status getModeOptionByMode(
+      chip::EndpointId, uint8_t mode, const ModeOptionType **dataPtr) const override {
+    for (uint8_t i = 0; i < 5; i++) {
+      if (sHumidifierModes[i].mode == mode) {
+        *dataPtr = &sHumidifierModes[i];
+        return chip::Protocols::InteractionModel::Status::Success;
+      }
+    }
+    return chip::Protocols::InteractionModel::Status::InvalidCommand;
+  }
+};
+
+HumidifierModesManager sHumidifierModesManager;
+
+} // namespace
+
+esp_matter::endpoint_t *create_humidifier_mode_select_endpoint(
+    esp_matter::node_t *node, void *priv_data) {
+  esp_matter::endpoint::mode_select_device::config_t config;
+  strncpy(config.mode_select.mode_select_description, "Humidifier",
+          sizeof(config.mode_select.mode_select_description) - 1);
+  config.mode_select.current_mode = 0;
+  config.mode_select.delegate     = &sHumidifierModesManager;
+  return esp_matter::endpoint::mode_select_device::create(node, &config, 0x00, priv_data);
+}
+
 // ---- ISR latches (one per physical button) ----
 
 static volatile bool s_fan_button_pressed  = false;
@@ -78,13 +144,19 @@ esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode) {
   // Mapping: Off=0%, Low=30%, Med(Night)=60%, High=100%
   static const uint8_t kPercent[4] = {0, 30, 60, 100};
   val = esp_matter_uint8(fan_mode < 4 ? kPercent[fan_mode] : 0);
-  return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000006, &val);
+  return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x0000000632, &val);
 }
 
 esp_err_t matter_onoff_update(uint16_t endpoint_id, bool on) {
   // Update OnOff (0x0000) on the OnOff cluster (0x0006).
   esp_matter_attr_val_t val = esp_matter_bool(on);
   return esp_matter::attribute::update(endpoint_id, 0x00000006, 0x00000000, &val);
+}
+
+esp_err_t matter_mode_select_update_current_mode(uint16_t endpoint_id, uint8_t mode) {
+  // Update CurrentMode (0x0003) on the Mode Select cluster (0x0050).
+  esp_matter_attr_val_t val = esp_matter_uint8(mode);
+  return esp_matter::attribute::update(endpoint_id, 0x00000050, 0x00000003, &val);
 }
 
 void setup_fan_button_listen_gpio(int32_t gpio_num) {

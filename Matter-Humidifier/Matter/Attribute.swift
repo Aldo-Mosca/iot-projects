@@ -96,3 +96,15 @@ extension FanControl {
     var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
   }
 }
+
+extension ModeSelect {
+  struct Description: MatterAttribute {
+    var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
+  }
+  struct SupportedModes: MatterAttribute {
+    var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
+  }
+  struct CurrentMode: MatterAttribute {
+    var attribute: UnsafeMutablePointer<esp_matter.attribute_t>
+  }
+}

@@ -43,6 +43,9 @@ struct ClusterID<Cluster: MatterCluster>: RawRepresentable {   // TODO: where do
   static var fanControl: ClusterID<FanControl> {
     .init(rawValue: 0x0000_0202)
   }
+  static var modeSelect: ClusterID<ModeSelect> {
+    .init(rawValue: 0x0000_0050)
+  }
 }
 
 struct Cluster: MatterCluster {
@@ -184,7 +187,7 @@ struct FanControl: MatterConcreteCluster {
   struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
     var rawValue: UInt32
 
-    static var fanMode: AttributeID<FanModeValue> { .init(rawValue: 0x0000_0003) }
+    static var fanMode: AttributeID<FanModeValue> { .init(rawValue: 0x0000_0000) }
     // TODO find the place where supported attributes are defined and add this:
     // static var fanModeSequence: AttributeID<FanModeSequenceValue> { .init(rawValue: 0x0000_0001) }  // OffLowMidHighAuto
     static var percentSetting: AttributeID<PercentSettingValue> { .init(rawValue: 0x0000_0002) }
@@ -195,21 +198,40 @@ struct FanControl: MatterConcreteCluster {
   init(_ cluster: UnsafeMutablePointer<esp_matter.cluster_t>) {
     self.cluster = cluster
   }
+
+  func attribute<Attribute: MatterAttribute>(_ id: AttributeID<Attribute>)
+    -> Attribute
+  {
+    Attribute(attribute: esp_matter.attribute.get_shim(cluster, id.rawValue))
+  }
+
+  var fanMode: FanModeValue { attribute(.fanMode) }
+  var percentSetting: PercentSettingValue { attribute(.percentSetting) }
 }
 
-// TODO: Do I add struct ModeSelect: MatterConcreteCluster {} here?
-// Let's try. Then we walk backwards 
-// struct ModeSelect: MatterConcreteCluster {
-//   static var clusterTypeId: ClusterID<Self> { .modeSelect }
-//   struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
-//     var rawValue: UInt32
+struct ModeSelect: MatterConcreteCluster {
+  static var clusterTypeId: ClusterID<Self> { .modeSelect }
+  struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
+    var rawValue: UInt32
 
-//     static var description: AttributeID<Description> { .init(rawValue: 0x000_0000) }
-//     static var supportedModes: AttributeID<SupportedModes> { .init(rawValue: 0x0000_0002) }
-//   }
-//   var cluster: UnsafeMutablePointer<esp_matter.cluster_t>
+    static var description: AttributeID<Description> { .init(rawValue: 0x0000_0000) }
+    static var supportedModes: AttributeID<SupportedModes> { .init(rawValue: 0x0000_0002) }
+    static var currentMode: AttributeID<CurrentMode> { .init(rawValue: 0x0000_0003) }
+  }
 
-//   init(_ cluster: UnsafeMutablePointer<esp_matter.cluster_t>) {
-//     self.cluster = cluster
-//   }
-// }
+  var cluster: UnsafeMutablePointer<esp_matter.cluster_t>
+
+  init(_ cluster: UnsafeMutablePointer<esp_matter.cluster_t>) {
+    self.cluster = cluster
+  }
+
+  func attribute<Attribute: MatterAttribute>(_ id: AttributeID<Attribute>)
+    -> Attribute
+  {
+    Attribute(attribute: esp_matter.attribute.get_shim(cluster, id.rawValue))
+  }
+
+  var description: Description { attribute(.description) }
+  var supportedModes: SupportedModes { attribute(.supportedModes) }
+  var currentMode: CurrentMode { attribute(.currentMode) }
+} 

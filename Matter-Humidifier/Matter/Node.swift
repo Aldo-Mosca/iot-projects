@@ -17,7 +17,7 @@ protocol MatterEndpoint {
   var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t> { get }
 }
 
-protocol MatterConreteEndpoint: MatterEndpoint {
+protocol MatterConcreteEndpoint: MatterEndpoint {
   static var deviceTypeId: UInt32 { get }
 
   init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>)
@@ -117,7 +117,7 @@ struct Endpoint: MatterEndpoint {
     self.init(endpoint)
   }
 
-  func `as`<T: MatterConreteEndpoint>(_ type: T.Type) -> T? {
+  func `as`<T: MatterConcreteEndpoint>(_ type: T.Type) -> T? {
     guard _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] == T.deviceTypeId else {
       return nil
     }
@@ -125,7 +125,7 @@ struct Endpoint: MatterEndpoint {
   }
 }
 
-struct MatterLight: MatterConreteEndpoint {
+struct MatterLight: MatterConcreteEndpoint {
   // Matter spec device type ID for On/Off Light (0x0100).
   static var deviceTypeId: UInt32 { 0x0100 }
 
@@ -142,7 +142,7 @@ struct MatterLight: MatterConreteEndpoint {
   }
 }
 
-struct MatterFan: MatterConreteEndpoint {
+struct MatterFan: MatterConcreteEndpoint {
   // Matter spec device type ID for Fan (0x0044).
   static var deviceTypeId: UInt32 { 0x0044 }
 
@@ -152,6 +152,23 @@ struct MatterFan: MatterConreteEndpoint {
     endpoint = create_humidifier_fan_endpoint(
       node.node, Unmanaged.passRetained(node.context).toOpaque())
     _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] = MatterFan.deviceTypeId
+  }
+
+  init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>) {
+    self.endpoint = endpoint
+  }
+}
+
+struct MatterModeSelect: MatterConcreteEndpoint {
+  // Matter spec device type ID for Mode Select (0x0027).
+  static var deviceTypeId: UInt32 { 0x0027 }
+
+  var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>
+
+  init(_ node: RootNode) {
+    endpoint = create_humidifier_mode_select_endpoint(
+      node.node, Unmanaged.passRetained(node.context).toOpaque())
+    _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] = MatterModeSelect.deviceTypeId
   }
 
   init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>) {
