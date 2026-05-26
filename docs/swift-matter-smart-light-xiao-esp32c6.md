@@ -299,3 +299,7 @@ led_driver_config_t config = {
 3. **CMake 4.x changed `ExternalProject_Add` behavior.** `WORKING_DIRECTORY` combined with `SOURCE_DIR`+`BINARY_DIR` is broken; use `cmake -E chdir` in `BUILD_COMMAND` instead.
 
 4. **The Seeed XIAO ESP32C6 (QFN32/FH4 variant) has no WS2812 LED.** The user LED is a plain single-color LED on GPIO 15, active LOW, driven by LEDC PWM.
+
+## NEW DISCOVERY
+To make custom ID, VENDOR_NAME, MODEL_NAME, QR code etc. See: 
+    https://github.com/espressif/esp-matter-tools/tree/main/mfg_tool
