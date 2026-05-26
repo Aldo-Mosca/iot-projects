@@ -13,14 +13,15 @@
 // Night (hw 1) is unreachable from Apple Home — physical button only.
 // When Night is active, Matter reports FanMode Low (1) as the closest anchor.
 
-let modeForHardwareState: [UInt8] = [0, 1, 2, 3]  // hw index → FanMode value -- Straight mapping, but could change in the future
+let modeForHardwareState: [UInt8] = [0, 1, 2, 3, 4]  // hw index → FanMode value -- Straight mapping, but could change in the future
 // hw Off(0)→0, hw Low(1)→1, hw High(2)→2, hw Night(3)→3
 func hardwareStateForFanMode(_ mode: UInt8) -> UInt8 {
   switch mode {
   case 0:  return 0  // Off
-  case 1:  return 1  // Low
-  case 2:  return 2  // Medium
-  case 3:  return 3  // High
+  case 1:  return 1  // On
+  case 2:  return 2  // 1H
+  case 3:  return 3  // 3H
+  case 4:  return 4  // 6H
   default: return 0  // ignore unknown modes
   }
 }
@@ -52,12 +53,10 @@ func main() {
 
   // (1) Create a Matter root node
   let rootNode = Matter.Node()
-  rootNode.identifyHandler = { print("[HUMI] identify") }
+  rootNode.identifyHandler = { print("[HUMI] I am a humidifier") }
 
   // (2) Create a Fan endpoint (device type 0x0044)
   // let fanEndpoint = Matter.Fan(node: rootNode)
-  // // TODO find the XML where attributes are defined and add this:
-  // // fanEndpoint.fanModeSequence = 0     // Off/Low/Med/High, with low reserved for "night" mode
   // fanEndpoint.eventHandler = { event in
   //   switch event.attribute {
   //     case .fanMode:
@@ -70,7 +69,7 @@ func main() {
   //         print("[HUMI] SHOULDN'T BE HERE 🥸 🥸 🥸 🥸 🥸 🥸 🥸 🥸 🥸 🥸 🥸 🥸 ")
   //         return
   //   }
-  //   // let presses = (Int(targetHw) - Int(hwState) + 4) % 4
+  //   // let presses = (Int(targetHw) - Int(hwState) + 5) % 5
   //   // for i in 0..<presses {
   //   //   if i > 0 { delay_ms(200) }
   //   //   fanButton.press()
@@ -90,31 +89,33 @@ func main() {
     }
   }
 
-  // (2.6) Create a Mode Select endpoint exposing Off/High/Low/Night.
+  // (2.6) Create a Mode Select endpoint exposing Off/On/2H/3H/6H.
   // Mode values match hwState directly (Off=0, High=1, Low=2, Night=3),
   // so a write to CurrentMode is handled the same way as a Fan write.
-  // Note: Apple Home may render the same humidifier through either the Fan
-  // endpoint or the Mode Select endpoint. A user write on either path will
-  // pulse the K1 button — duplicate writes from both endpoints in quick
-  // succession are not currently de-duplicated.
+  // Note: Apple Home is not rendering controls for the Mode Select endpoint. 
+  // FIXME: A user write on either path will pulse the K1 button — duplicate writes 
+  // from both endpoints in quick succession are not currently de-duplicated.
   let modeSelectEndpoint = Matter.ModeSelector(node: rootNode)
 
-  // modeSelectEndpoint.description = "Fan Mode"
-  // modeSelectEndpoint.supportedModes = [] // FIXME ALDO
+  // modeSelectEndpoint.description = "Humidifier Mode"
   modeSelectEndpoint.eventHandler = { event in
     guard case .currentMode = event.attribute else { return }
     let targetMode = UInt8(event.value & 0xFF)
     print("[HUMI] 🪀 🪀 🪀 🪀 CurrentMode received \(event.value)")
     // TODO: multi-press to reach target. Matching the Fan handler's
     // single-press behavior for now (see commented-out logic above).
-    fanButton.press()
+    let presses = (Int(targetHw) - Int(hwState) + 5) % 5
+    for i in 0..<presses {
+      if i > 0 { delay_ms(200) }
+      fanButton.press()
+    }    
     hwState = targetMode
   }
 
   // (3) Add the endpoints to the node
-  rootNode.addEndpoint(lightEndpoint)
   // rootNode.addEndpoint(fanEndpoint)    // TODO GUARD CUIDAO! MOSCA FIXME
   rootNode.addEndpoint(modeSelectEndpoint)
+  rootNode.addEndpoint(lightEndpoint)
 
   // (4) Start Matter
   let app = Matter.Application()
@@ -126,7 +127,7 @@ func main() {
   while true {
     if matter_fan_button_was_pressed() {
       print("[HUMI] button 1 pressed yay 👍 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏  ")
-      hwState = (hwState + 1) % 4
+      hwState = (hwState + 1) % 5
       print("[HUMI] hwState is: \(hwState)")
       // fanEndpoint.updateFanMode(modeForHardwareState[Int(hwState)])
       modeSelectEndpoint.updateCurrentMode(hwState)

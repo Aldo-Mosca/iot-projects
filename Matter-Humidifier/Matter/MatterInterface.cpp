@@ -73,15 +73,15 @@ SemanticTagType sTags[] = {
 };
 
 const ModeOptionType sHumidifierModes[5] = {
-  { chip::CharSpan("Off", 0), 0,
+  { chip::CharSpan::fromCharString("Off"), 0,
     chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
-  { chip::CharSpan("On",  1), 1,
+  { chip::CharSpan::fromCharString("On"),  1,
     chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
-  { chip::CharSpan("1H",  2), 2,
+  { chip::CharSpan::fromCharString("1H"),  2,
     chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
-  { chip::CharSpan("3H",  3), 3,
+  { chip::CharSpan::fromCharString("3H"),  3,
     chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
-  { chip::CharSpan("6H",  4), 4,
+  { chip::CharSpan::fromCharString("6H"),  4,
     chip::app::DataModel::List<const SemanticTagType>(sTags, 1) },
 };
 

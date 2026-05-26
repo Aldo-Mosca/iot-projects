@@ -47,7 +47,7 @@ final class ButtonShunt {
   //   // END DEBUG
   // }
 
-  func press(durationMs: UInt32 = 100) {
+  func press(durationMs: UInt32 = 500) {
     gpio_set_level(gpio_num_t(rawValue: gpio), 0)  // pull low — press
     print("[HUMI] 🚩 🚩 🚩 🚩 🚩 BUTTON PRESS \(gpio) 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 ")
     delay_ms(durationMs)
