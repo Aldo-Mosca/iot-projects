@@ -276,3 +276,80 @@ Relevant git commits in esp-matter for `get_device_type_ids`:
 - **Fan device type (0x0044)**: No native humidifier device type exists in Matter 1.4. Fan is the industry standard workaround (used by SwitchBot, TCL, others).
 - **FanModeSequence 0x01**: Required to show discrete mode selector in Apple Home. Value 0x00 shows only a continuous speed slider.
 - **Embedded Swift**: Application-level code written in Swift over ESP Matter C++ SDK. Toolchain is cutting edge (nightly Swift trunk snapshot required, not Xcode Swift).
+
+---
+
+## Session Log
+
+### 2026-05-30 — New humidifier unit, grounding gotcha, Switch cluster shelved
+
+**Hardware change**
+
+Swapped to a newer humidifier variant. Front-panel labels are now **S1 MIST** and **S2 LIGHT** (replacing K1/K2 from the original unit). Functionally identical — both are momentary buttons that cycle modes — so the existing `fanButton` (S1) / `lampButton` (S2) variable naming still applies. Hardware mapping:
+
+| Panel | Was | Now in code |
+|---|---|---|
+| S1 MIST | K2 (fan) | `fanButton` GPIO 2 shunt, `fanListenGPIO` 21 listen |
+| S2 LIGHT | K1 (lamp) | `lampButton` GPIO 0 shunt, `lampListenGPIO` 1 listen |
+
+**Mode cycle expanded to 5 states**
+
+The new unit's MIST button cycles through five states instead of four: Off → On → 1H → 3H → 6H → Off (where 1H/3H/6H are timer-mode positions, not fan speeds). `modeForHardwareState` in `main/Main.swift` and the `sHumidifierModes[5]` table in `Matter/MatterInterface.cpp` are sized accordingly.
+
+**Mode Select cluster (0x0050) added alongside Fan**
+
+The Fan Control cluster (0x0202) doesn't have enough enum slots to express five modes cleanly, so a Mode Select endpoint (device type 0x0027) was added as an alternative surface for Apple Home. Implementation lives in:
+
+- `Matter/MatterInterface.cpp` — `HumidifierModesManager` (a `SupportedModesManager` subclass with hardcoded modes) and `create_humidifier_mode_select_endpoint()`.
+- `Matter/Clusters.swift` / `Matter/Attribute.swift` — `ModeSelect` cluster type and `CurrentMode` / `SupportedModes` / `Description` attribute structs.
+- `Matter/Node.swift` — `MatterModeSelect` endpoint struct.
+- `Matter/Matter.swift` — `Matter.ModeSelector` Swift class (renamed from `Matter.ModeSelect` to avoid shadowing the cluster type).
+
+Current state: Mode Select is the active control surface in Main.swift; the Fan endpoint creation is commented out for now.
+
+**Generic Switch cluster (0x003B) experiment — shelved**
+
+Added a Generic Switch endpoint (device type 0x000F) with the MomentarySwitch feature bit, intended to expose the S2 LIGHT button as an automation trigger in Apple Home. Crashed at runtime when the button fired (`Data received on an unknown session` + stack dumps), and Apple Home reported "unconfigured button." Code is committed but commented out in `main/Main.swift`:
+
+```swift
+// let switchEndpoint = Matter.Switch(node: rootNode)
+// ...
+// rootNode.addEndpoint(switchEndpoint)
+// switchEndpoint.press()
+```
+
+Likely fix when revisiting: calls to `SwitchServer::Instance().OnInitialPress(...)` need to hold the chip stack lock (`PlatformMgr().LockChipStack()` / `UnlockChipStack()`), and the `CurrentPosition` 1→0 write probably needs a small delay between transitions.
+
+**Spurious-press infinite loop — root caused to floating ground**
+
+Symptom: at boot the MIST LED cycled rapidly through states and the Matter console flooded with `CurrentMode received` events. Initial hypothesis was a code-side feedback loop — `fanButton.press()` was being called both in the physical-detection branch in the main loop *and* in the Mode Select event handler (with a `targetHw` vs `targetMode` variable-shadowing bug that made `presses` always non-zero on self-writes).
+
+Both code-side issues were fixed:
+
+1. `fanButton.press()` and `lampButton.press()` in the physical-detection branches of the main loop are commented out (they're redundant — the user already pressed the button physically; there's nothing to actuate).
+2. `let presses = (Int(targetHw) - Int(hwState) + 5) % 5` in the Mode Select event handler corrected to `Int(targetMode)`. With this, self-writes (firmware syncing physical state back to Matter) compute `presses=0` and don't re-trigger the press loop.
+
+But the loop continued — at a slower rate. Disconnecting the humidifier from the ESP entirely stopped the loop, confirming the K2 line itself was driving spurious negedge interrupts. **Root cause: missing common ground between XIAO and the humidifier's green board.** With grounds floating relative to each other, the listen GPIOs saw constant noise crossings of the negedge threshold. Tying GNDs together eliminated the loop.
+
+**Open question after grounding fix**
+
+After tying grounds, the loop stopped — but physical panel presses are no longer detected either. Two possibilities to investigate with a meter:
+
+- K2/K1 lines *do* pulse LOW on panel press but GPIO 21/1 isn't seeing the negedge (wiring or pin-config issue).
+- K2/K1 lines *don't* pulse LOW on panel press (the new green board may route the buttons through its MCU's matrix scan rather than as simple short-to-GND switches). If so, the listen-GPIO approach won't work and physical-press detection requires tapping a different node (e.g., the LED driver output line that changes when the mode cycles).
+
+**Filed for next session.**
+
+**Other small things**
+
+- All debug `print()` calls in `main/Main.swift` and `main/ButtonShunt.swift` were prefixed with `[HUMI]` for easier console filtering (`idf.py monitor | grep '\[HUMI\]'`).
+- Fixed a longstanding typo: `MatterConreteEndpoint` → `MatterConcreteEndpoint` across `Matter/Node.swift` (5 sites). The entry in `REDUNDANCIES.md` tracking this typo was removed.
+- Investigated adding `acceptedCommandList` (global attribute 0xFFF9) but determined it's unnecessary — read-only, auto-populated by esp-matter, only useful if we wanted to decode the read events explicitly.
+
+### 2026-05-31 — ButtonShunt polarity inverted for MOSFET gate drive
+
+`main/ButtonShunt.swift` now drives the GPIO **HIGH to press, LOW to release** (was the opposite). Idle level at init is 0; `press()` raises the line for `durationMs` then lowers it again.
+
+**Why:** the GPIO no longer connects directly to the button contacts — it drives an N-channel MOSFET gate. With the MOSFET in series, the polarity sense is reversed: HIGH on the gate turns the FET on and shorts the button (press), LOW turns it off (released). The original code's idle-HIGH / press-LOW would have left the FET conducting at all times, holding the button perpetually pressed.
+
+No call-site changes were needed — the public API of `ButtonShunt` is unchanged. The header comment in the file was updated to describe MOSFET-gate semantics instead of the older direct-connect/open-drain rationale.

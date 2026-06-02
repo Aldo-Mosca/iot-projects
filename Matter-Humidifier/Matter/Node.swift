@@ -175,3 +175,20 @@ struct MatterModeSelect: MatterConcreteEndpoint {
     self.endpoint = endpoint
   }
 }
+
+struct MatterSwitch: MatterConcreteEndpoint {
+  // Matter spec device type ID for Generic Switch (0x000F).
+  static var deviceTypeId: UInt32 { 0x000F }
+
+  var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>
+
+  init(_ node: RootNode) {
+    endpoint = create_humidifier_switch_endpoint(
+      node.node, Unmanaged.passRetained(node.context).toOpaque())
+    _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] = MatterSwitch.deviceTypeId
+  }
+
+  init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>) {
+    self.endpoint = endpoint
+  }
+}

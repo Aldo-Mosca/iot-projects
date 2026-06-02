@@ -29,7 +29,7 @@ protocol MatterConcreteCluster: MatterCluster {
   static var clusterTypeId: ClusterID<Self> { get }
 }
 
-struct ClusterID<Cluster: MatterCluster>: RawRepresentable {   // TODO: where does FanMode go?
+struct ClusterID<Cluster: MatterCluster>: RawRepresentable {   
   var rawValue: UInt32
 
   static var identify: ClusterID<Identify> { .init(rawValue: 0x0000_0003) }
@@ -65,7 +65,7 @@ struct Cluster: MatterCluster {
   }
 }
 
-struct Identify: MatterConcreteCluster {      // TODO make one of these for FanMode?
+struct Identify: MatterConcreteCluster {      
   static var clusterTypeId: ClusterID<Self> { .identify }
   struct AttributeID<Attribute: MatterAttribute>: MatterAttributeID {
     var rawValue: UInt32

@@ -45,6 +45,12 @@ esp_matter::endpoint_t *create_on_off_light_endpoint(
 esp_matter::endpoint_t *create_humidifier_mode_select_endpoint(
     esp_matter::node_t *node, void *priv_data);
 
+// Creates a Generic Switch endpoint (device type 0x000F) with the Switch
+// cluster (0x003B) configured for MomentarySwitch only. Apple Home will
+// surface this as a physical button usable as an automation trigger.
+esp_matter::endpoint_t *create_humidifier_switch_endpoint(
+    esp_matter::node_t *node, void *priv_data);
+
 extern "C" {
 
 // pdMS_TO_TICKS is a C macro and cannot be called directly from Swift.
@@ -63,6 +69,11 @@ esp_err_t matter_onoff_update(uint16_t endpoint_id, bool on);
 // Call this when a physical K1 press changes the firmware state.
 // mode values: 0=Off, 1=High, 2=Low, 3=Night (matches hwState directly).
 esp_err_t matter_mode_select_update_current_mode(uint16_t endpoint_id, uint8_t mode);
+
+// Fire a single momentary press on the Switch cluster: toggle CurrentPosition
+// 1 → 0 and emit the InitialPress event. Call this when the physical lamp
+// button is pressed so Home automations can react.
+esp_err_t matter_switch_press(uint16_t endpoint_id);
 
 // Configure a GPIO as input with a falling-edge interrupt to detect physical K2 (fan) presses.
 // Also installs the GPIO ISR service — call this before setup_lamp_button_listen_gpio.

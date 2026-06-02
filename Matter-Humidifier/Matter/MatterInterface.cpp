@@ -11,6 +11,7 @@
 
 #include "BridgingHeader.h"
 #include <app/clusters/mode-select-server/supported-modes-manager.h>
+#include <app/clusters/switch-server/switch-server.h>
 #include <cstring>
 
 esp_err_t esp_matter::attribute::set_callback_shim(callback_t_shim callback) {
@@ -116,6 +117,30 @@ esp_matter::endpoint_t *create_humidifier_mode_select_endpoint(
   return esp_matter::endpoint::mode_select_device::create(node, &config, 0x00, priv_data);
 }
 
+// ---- Generic Switch endpoint factory ----
+//
+// Generic Switch device type (0x000F) with the Switch cluster (0x003B) configured
+// for MomentarySwitch only (feature bit 1). Apple Home will surface this as a
+// physical button that automations can trigger on. Without MomentarySwitchRelease,
+// only the InitialPress event is emitted; CurrentPosition flips 1 → 0 to represent
+// each tap.
+
+esp_matter::endpoint_t *create_humidifier_switch_endpoint(
+    esp_matter::node_t *node, void *priv_data) {
+  esp_matter::endpoint::generic_switch::config_t config;
+  config.switch_cluster.number_of_positions = 2;
+  config.switch_cluster.current_position    = 0;
+  esp_matter::endpoint_t *endpoint =
+      esp_matter::endpoint::generic_switch::create(node, &config, 0x00, priv_data);
+  if (!endpoint) return nullptr;
+  esp_matter::cluster_t *cluster =
+      esp_matter::cluster::get(endpoint, chip::app::Clusters::Switch::Id);
+  if (cluster) {
+    esp_matter::cluster::switch_cluster::feature::momentary_switch::add(cluster);
+  }
+  return endpoint;
+}
+
 // ---- ISR latches (one per physical button) ----
 
 static volatile bool s_fan_button_pressed  = false;
@@ -157,6 +182,17 @@ esp_err_t matter_mode_select_update_current_mode(uint16_t endpoint_id, uint8_t m
   // Update CurrentMode (0x0003) on the Mode Select cluster (0x0050).
   esp_matter_attr_val_t val = esp_matter_uint8(mode);
   return esp_matter::attribute::update(endpoint_id, 0x00000050, 0x00000003, &val);
+}
+
+esp_err_t matter_switch_press(uint16_t endpoint_id) {
+  // Bump CurrentPosition (0x0001) to 1, fire InitialPress, then back to 0.
+  // With MomentarySwitch only (no MomentarySwitchRelease), InitialPress is the
+  // only event the cluster emits. Apple Home renders this as a single tap.
+  esp_matter_attr_val_t one  = esp_matter_uint8(1);
+  esp_matter_attr_val_t zero = esp_matter_uint8(0);
+  esp_matter::attribute::update(endpoint_id, 0x0000003B, 0x00000001, &one);
+  chip::app::Clusters::SwitchServer::Instance().OnInitialPress(endpoint_id, 1);
+  return esp_matter::attribute::update(endpoint_id, 0x0000003B, 0x00000001, &zero);
 }
 
 void setup_fan_button_listen_gpio(int32_t gpio_num) {
