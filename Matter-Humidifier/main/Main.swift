@@ -208,20 +208,32 @@ func main() {
   // Main loop: poll panel sensors and sync state back to Matter.
   // Keep local variables alive — workaround for swift-matter-examples issue #10.
   var lastMistState: UInt8 = 255  // sentinel — forces a sync on first read
+  var pendingMistState: UInt8 = 0
+  var pendingMistCount: Int = 0
+  let kMistDebounceCount = 2      // consecutive identical reads required (≈ 400 ms)
   while true {
     // MIST: state-based sensing from the panel-LED encoding. Each iteration
-    // reads the current hardware mode (Off/On/1H/3H/6H) and only acts on
-    // changes. No edge detection, no debouncing, no over-correcting.
-    let newMistState = matter_read_mist_state()
-    if newMistState != lastMistState {
-      print("[HUMI] 💧 mist state change \(lastMistState) → \(newMistState)")
-      hwState = newMistState
+    // reads the current hardware mode (Off/On/1H/3H/6H) and only reports a
+    // change once the same state has been observed kMistDebounceCount times
+    // in a row. Filters out brief transients — notably the panel's empty-tank
+    // signal, which momentarily lifts L4 to 4.5 V (the mode-1 inactive-col
+    // pattern) before snapping the device back to off.
+    let newRead = matter_read_mist_state()
+    if newRead == pendingMistState {
+      if pendingMistCount < kMistDebounceCount { pendingMistCount += 1 }
+    } else {
+      pendingMistState = newRead
+      pendingMistCount = 1
+    }
+    if pendingMistCount >= kMistDebounceCount && pendingMistState != lastMistState {
+      print("[HUMI] 💧 mist state change \(lastMistState) → \(pendingMistState)")
+      hwState = pendingMistState
       let newOn = (hwState != 0)
       if newOn != mistIsOn {
         mistIsOn = newOn
         mistEndpoint.update(mistIsOn)
       }
-      lastMistState = newMistState
+      lastMistState = pendingMistState
     }
 
     // LIGHT: still edge-detected (no LED feedback on the panel for this button).
