@@ -35,6 +35,12 @@ void recomissionFabric();
 esp_matter::endpoint_t *create_humidifier_fan_endpoint(
     esp_matter::node_t *node, void *priv_data);
 
+// Creates an air purifier endpoint (device type 0x002D). Same FanControl
+// cluster as the fan endpoint, just a different device-type ID so Apple
+// Home renders the accessory as an air purifier.
+esp_matter::endpoint_t *create_humidifier_air_purifier_endpoint(
+    esp_matter::node_t *node, void *priv_data);
+
 // Creates an on/off light endpoint (device type 0x0100).
 esp_matter::endpoint_t *create_on_off_light_endpoint(
     esp_matter::node_t *node, void *priv_data);
@@ -77,16 +83,37 @@ esp_err_t matter_switch_press(uint16_t endpoint_id);
 
 // Configure a GPIO as input with a falling-edge interrupt to detect physical K2 (fan) presses.
 // Also installs the GPIO ISR service — call this before setup_lamp_button_listen_gpio.
+// Superseded by setup_mist_panel_sensors / matter_read_mist_state below — the
+// listen-on-K2 approach was unreliable on the new green board. Kept for reference.
 void setup_fan_button_listen_gpio(int32_t gpio_num);
 
 // Returns true (and clears the latch) if a physical K2 (fan) press was detected since last call.
+// Superseded — see matter_read_mist_state.
 bool matter_fan_button_was_pressed(void);
 
 // Configure a GPIO as input with a falling-edge interrupt to detect physical K1 (lamp) presses.
 // ISR service must already be installed (call setup_fan_button_listen_gpio first).
+// Still used — but now called with lightButtonInputGPIO (D3/GPIO21) for the
+// LIGHT panel button, not the original K1 listen pin.
 void setup_lamp_button_listen_gpio(int32_t gpio_num);
 
 // Returns true (and clears the latch) if a physical K1 (lamp) press was detected since last call.
+// Still used for the LIGHT (S2) panel button.
 bool matter_lamp_button_was_pressed(void);
+
+// ===== Panel-LED sensing for MIST state (replaces K2 button listen) =====
+
+// Configure the three GPIOs used to sense MIST mode from the panel LED encoding:
+//   row_gpio  — ADC input, must be ADC1-capable (XIAO ESP32-C6: GPIO0..GPIO6;
+//               only D1=GPIO1 is free after the shunts on D0/D2)
+//   col_a_gpio, col_b_gpio — digital inputs
+// Call this once at startup, after setup_*_listen_gpio() (which installs the
+// shared GPIO ISR service the digital inputs share).
+void setup_mist_panel_sensors(int32_t row_gpio, int32_t col_a_gpio, int32_t col_b_gpio);
+
+// Read the current MIST hardware state by sampling the panel LED encoding.
+// Returns: 0 = Off, 1 = On, 2 = 1H, 3 = 3H, 4 = 6H.
+// Safe to call from the main loop at ~5 Hz; takes < 1 ms.
+uint8_t matter_read_mist_state(void);
 
 } // extern "C"

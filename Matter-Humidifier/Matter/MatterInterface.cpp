@@ -13,6 +13,10 @@
 #include <app/clusters/mode-select-server/supported-modes-manager.h>
 #include <app/clusters/switch-server/switch-server.h>
 #include <cstring>
+#include <esp_adc/adc_oneshot.h>
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
+#include <esp_log.h>
 
 esp_err_t esp_matter::attribute::set_callback_shim(callback_t_shim callback) {
   return set_callback((callback_t)callback);
@@ -43,6 +47,10 @@ esp_matter::endpoint_t *create_humidifier_fan_endpoint(
   return esp_matter::endpoint::fan::create(node, &config, 0x00, priv_data);
   return esp_matter::endpoint::fan::create(node, &config, 0x00, priv_data);
 }
+
+// ---- Air Purifier endpoint factory ----
+// (Definition moved below the anonymous namespace that holds
+// sHumidifierModesManager — the factory needs to reference it.)
 
 // ---- On/Off Light endpoint factory ----
 
@@ -107,6 +115,73 @@ HumidifierModesManager sHumidifierModesManager;
 
 } // namespace
 
+// Helper: set the StandardNamespace (0x0001) attribute on a Mode Select
+// cluster. The mode_select::config_t.standard_namespace member is declared
+// const, so it can't be set via the config struct — we have to write the
+// attribute storage directly after the cluster has been created.
+//
+// Apple Home appears to gate rendering of custom ModeSelect mode lists on
+// the StandardNamespace being non-null (and possibly on it being a value
+// Home recognizes). Without this, Home reads FeatureMap / ClusterRevision /
+// Description / CurrentMode but skips SupportedModes entirely.
+static void set_mode_select_standard_namespace(
+    esp_matter::endpoint_t *endpoint, uint16_t ns) {
+  esp_matter::cluster_t *cluster =
+      esp_matter::cluster::get(endpoint, 0x00000050);  // ModeSelect cluster
+  if (!cluster) return;
+  esp_matter::attribute_t *attr =
+      esp_matter::attribute::get(cluster, 0x00000001); // StandardNamespace
+  if (!attr) return;
+  esp_matter_attr_val_t val =
+      esp_matter_nullable_uint16(nullable<uint16_t>(ns));
+  esp_matter::attribute::set_val(attr, &val);
+}
+
+// ---- Air Purifier endpoint factory ----
+//
+// Device type 0x002D. Spec-mandatory clusters: Identify, Groups, FanControl
+// (provided by the air_purifier::create() factory). Additional clusters
+// added on top: OnOff (for a simple on/off toggle in Apple Home) and
+// Mode Select (for the 5-mode Off/On/1H/3H/6H humidifier mist cycle).
+// Filter monitoring clusters (HepaFilter 0x0071, ActivatedCarbon 0x0072)
+// are spec-optional and not added here.
+
+esp_matter::endpoint_t *create_humidifier_air_purifier_endpoint(
+    esp_matter::node_t *node, void *priv_data) {
+  esp_matter::endpoint::air_purifier::config_t config;
+  config.fan_control.fan_mode          = 0;       // Off
+  config.fan_control.fan_mode_sequence = 0x03;    // Off/Low/High/Auto
+  config.fan_control.percent_setting   = static_cast<uint8_t>(0);
+  config.fan_control.percent_current   = 0;
+  esp_matter::endpoint_t *endpoint =
+      esp_matter::endpoint::air_purifier::create(node, &config, 0x00, priv_data);
+  if (!endpoint) return nullptr;
+
+  // Extra cluster: OnOff (no Lighting feature — this is on an air-purifier
+  // endpoint, not a light).
+  esp_matter::cluster::on_off::config_t onoff_cfg;
+  onoff_cfg.on_off = false;
+  esp_matter::cluster::on_off::create(endpoint, &onoff_cfg,
+      esp_matter::CLUSTER_FLAG_SERVER, ESP_MATTER_NONE_FEATURE_ID);
+
+  // Extra cluster: Mode Select (shares the same SupportedModesManager
+  // delegate used by the standalone mode_select endpoint below).
+  esp_matter::cluster::mode_select::config_t ms_cfg;
+  strncpy(ms_cfg.mode_select_description, "Humidifier",
+          sizeof(ms_cfg.mode_select_description) - 1);
+  ms_cfg.current_mode = 0;
+  ms_cfg.delegate     = &sHumidifierModesManager;
+  esp_matter::cluster::mode_select::create(endpoint, &ms_cfg,
+      esp_matter::CLUSTER_FLAG_SERVER, ESP_MATTER_NONE_FEATURE_ID);
+
+  // Coax Apple Home into rendering the custom modes — see helper comment.
+  // 0x0040 = Common Mode Namespace (Off / On / Auto / Boost / Night / Sleep
+  // and friends). Recognized by Apple Home; namespace value 0 was not.
+  set_mode_select_standard_namespace(endpoint, 0x0040);
+
+  return endpoint;
+}
+
 esp_matter::endpoint_t *create_humidifier_mode_select_endpoint(
     esp_matter::node_t *node, void *priv_data) {
   esp_matter::endpoint::mode_select_device::config_t config;
@@ -114,7 +189,12 @@ esp_matter::endpoint_t *create_humidifier_mode_select_endpoint(
           sizeof(config.mode_select.mode_select_description) - 1);
   config.mode_select.current_mode = 0;
   config.mode_select.delegate     = &sHumidifierModesManager;
-  return esp_matter::endpoint::mode_select_device::create(node, &config, 0x00, priv_data);
+  esp_matter::endpoint_t *endpoint =
+      esp_matter::endpoint::mode_select_device::create(node, &config, 0x00, priv_data);
+  if (endpoint) {
+    set_mode_select_standard_namespace(endpoint, 0x0040);
+  }
+  return endpoint;
 }
 
 // ---- Generic Switch endpoint factory ----
@@ -223,7 +303,9 @@ void setup_lamp_button_listen_gpio(int32_t gpio_num) {
   cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
   cfg.intr_type = GPIO_INTR_NEGEDGE;
   gpio_config(&cfg);
-  // gpio_install_isr_service already called by setup_fan_button_listen_gpio
+  // Install ISR service if not already done. Returns ESP_ERR_INVALID_STATE
+  // if a previous setup_*_listen_gpio() call installed it; ignore that.
+  gpio_install_isr_service(0);
   gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), lamp_button_isr_handler, nullptr);
 }
 
@@ -233,6 +315,125 @@ bool matter_lamp_button_was_pressed(void) {
     return true;
   }
   return false;
+}
+
+// ===== MIST panel LED sensing =====
+// Replaces the K2 listen-ISR approach (which was unreliable on the new green
+// board). Polls three panel-cable lines on each main-loop tick:
+//   L2 (row, ADC)  — 3-level voltage selects "off" / "pair 1" / "pair 2"
+//   L3 (col A, digital) — distinguishes On/3H from 1H/6H
+//   L4 (col B, digital)
+// See docs/WIRING-UPDATE.md for the divider schematic and pin map.
+
+static adc_oneshot_unit_handle_t s_mist_adc_handle = nullptr;
+static adc_cali_handle_t s_mist_adc_cali_handle = nullptr;
+static adc_channel_t s_mist_row_channel = ADC_CHANNEL_0;
+static int32_t s_mist_col_a_gpio = -1;
+static int32_t s_mist_col_b_gpio = -1;
+
+void setup_mist_panel_sensors(int32_t row_gpio, int32_t col_a_gpio, int32_t col_b_gpio) {
+  s_mist_col_a_gpio = col_a_gpio;
+  s_mist_col_b_gpio = col_b_gpio;
+
+  // ESP32-C6 ADC1 channels map 1:1 with GPIO0..GPIO6. Only D0/D1/D2 are
+  // routed out on the XIAO ESP32-C6 — and D0/D2 are spoken for by the button
+  // shunts, leaving D1 (GPIO1) as the only viable ADC pin.
+  if (row_gpio < 0 || row_gpio > 6) {
+    ESP_LOGE("HUMI", "MIST row GPIO %d is not ADC1-capable on ESP32-C6", (int)row_gpio);
+    return;
+  }
+  s_mist_row_channel = static_cast<adc_channel_t>(row_gpio);
+
+  adc_oneshot_unit_init_cfg_t init_cfg = {};
+  init_cfg.unit_id = ADC_UNIT_1;
+  init_cfg.ulp_mode = ADC_ULP_MODE_DISABLE;
+  if (adc_oneshot_new_unit(&init_cfg, &s_mist_adc_handle) != ESP_OK) {
+    ESP_LOGE("HUMI", "adc_oneshot_new_unit failed");
+    s_mist_adc_handle = nullptr;
+    return;
+  }
+
+  adc_oneshot_chan_cfg_t chan_cfg = {};
+  chan_cfg.atten = ADC_ATTEN_DB_12;   // ~0..3.3 V usable input range
+  chan_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
+  adc_oneshot_config_channel(s_mist_adc_handle, s_mist_row_channel, &chan_cfg);
+
+  // Curve-fitting calibration — gives us mV instead of raw counts.
+  // Falls back gracefully if the chip doesn't support it.
+  adc_cali_curve_fitting_config_t cali_cfg = {};
+  cali_cfg.unit_id = ADC_UNIT_1;
+  cali_cfg.chan = s_mist_row_channel;
+  cali_cfg.atten = ADC_ATTEN_DB_12;
+  cali_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
+  if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_mist_adc_cali_handle) != ESP_OK) {
+    ESP_LOGW("HUMI", "ADC calibration unavailable, will use raw ADC counts");
+    s_mist_adc_cali_handle = nullptr;
+  }
+
+  // Col A / Col B: plain digital inputs, no pull (the panel drives them
+  // rail-to-rail via the 100k/100k divider).
+  gpio_config_t cfg = {};
+  cfg.pin_bit_mask = (1ULL << col_a_gpio) | (1ULL << col_b_gpio);
+  cfg.mode = GPIO_MODE_INPUT;
+  cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+  cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  cfg.intr_type = GPIO_INTR_DISABLE;   // polled, not interrupt-driven
+  gpio_config(&cfg);
+}
+
+uint8_t matter_read_mist_state(void) {
+  if (!s_mist_adc_handle) return 0;
+
+  // Average a few ADC samples to reject single-sample noise on the row line.
+  const int kSamples = 8;
+  int raw_sum = 0;
+  for (int i = 0; i < kSamples; i++) {
+    int raw;
+    if (adc_oneshot_read(s_mist_adc_handle, s_mist_row_channel, &raw) != ESP_OK) {
+      return 0;
+    }
+    raw_sum += raw;
+  }
+  int raw_avg = raw_sum / kSamples;
+
+  int mv = raw_avg;
+  if (s_mist_adc_cali_handle) {
+    adc_cali_raw_to_voltage(s_mist_adc_cali_handle, raw_avg, &mv);
+  }
+
+  bool col_a_lo = (gpio_get_level(static_cast<gpio_num_t>(s_mist_col_a_gpio)) == 0);
+  bool col_b_lo = (gpio_get_level(static_cast<gpio_num_t>(s_mist_col_b_gpio)) == 0);
+
+  // Voltages at the ESP input (after the 100k/100k divider halves the panel
+  // signal):
+  //   Off:                 ~5  mV   (both cols also LOW — panel drives no LED)
+  //   Pair 2 (3H / 6H):   ~1100 mV   (panel ~2.2 V)
+  //   Pair 1 (On / 1H):   ~1550 mV   (panel ~3.1 V)
+  // Thresholds picked at the midpoints, with generous off-detection floor.
+  //
+  // Off-state cross-check: in a real "on" mode, exactly one of L3/L4 is LOW
+  // (the active LED). Both LOW is the off-state pattern, which the panel also
+  // produces when the device is genuinely off. So if both columns are LOW we
+  // treat the read as off, regardless of what L2 reports — this rejects
+  // periodic L2 transients (the panel does a scan/refresh every ~10 s that
+  // briefly lifts L2 to ~550 mV without disturbing the columns).
+  uint8_t decoded;
+  bool exactly_one_col_active = (col_a_lo != col_b_lo);
+  if (mv < 200 || !exactly_one_col_active) {
+    decoded = 0;                                 // Off (or transient on L2 alone)
+  } else if (mv > 1300) {
+    // Pair 1: On (1) or 1H (2)
+    decoded = col_a_lo ? 1 : 2;
+  } else {
+    // Pair 2: 3H (3) or 6H (4)
+    decoded = col_a_lo ? 3 : 4;
+  }
+
+  // [DEBUG] Verbose per-poll trace. Re-enable when diagnosing sensing issues.
+  // printf("[HUMI] 🔬 mist read: raw=%d mv=%d col_a=%d col_b=%d -> state %u\n",
+  //        raw_avg, mv, col_a_lo ? 1 : 0, col_b_lo ? 1 : 0, decoded);
+
+  return decoded;
 }
 
 } // extern "C"

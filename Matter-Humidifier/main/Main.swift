@@ -42,10 +42,15 @@ func main() {
   print("[HUMI] Hello, Embedded Swift! (Humidifier / Fan device) 🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰🍰")
 
   let fanButton  = ButtonShunt(gpio: fanButtonGPIO)
-  setup_fan_button_listen_gpio(fanListenGPIO)
+  // Old K2/MIST listen-ISR approach — replaced by panel-LED state sensing.
+  // setup_fan_button_listen_gpio(fanListenGPIO)
+  setup_mist_panel_sensors(mistRowGPIO, mistColAGPIO, mistColBGPIO)
 
   let lampButton = ButtonShunt(gpio: lampButtonGPIO)
-  setup_lamp_button_listen_gpio(lampListenGPIO)
+  // LIGHT button is still edge-detected via the panel cable's L1 line.
+  // Repurposes the existing setup_lamp_button_listen_gpio shim with the new
+  // input pin (D3/GPIO21, was the K2 listen wire).
+  setup_lamp_button_listen_gpio(lightButtonInputGPIO)
 
   // Assumed hardware states on boot.
   var hwState: UInt8 = 0   // fan: Off
@@ -78,6 +83,25 @@ func main() {
   //   hwState = targetHw
   // }
 
+  // (2.1) Air Purifier endpoint (device type 0x002D). Uses the same FanControl
+  // cluster as the Fan endpoint above — only the device-type ID differs.
+  // Apple Home renders this as an air-purifier accessory.
+  // let airPurifierEndpoint = Matter.AirPurifier(node: rootNode)
+  // airPurifierEndpoint.eventHandler = { event in
+  //   switch event.attribute {
+  //     case .fanMode:
+  //         targetHw = hardwareStateForFanMode(UInt8(event.value & 0xFF))
+  //         print("[HUMI] 🌬️ AirPurifier FanMode received \(event.value)")
+  //     case .percentSetting:
+  //         targetHw = hardwareStateForPercent(UInt8(event.value & 0xFF))
+  //         print("[HUMI] 🌬️ AirPurifier PercentSetting received \(event.value)")
+  //     default:
+  //         return
+  //   }
+  //   fanButton.press()
+  //   hwState = targetHw
+  // }
+
   // (2.5) Create an OnOff Light endpoint for the lamp (K1 button)
   let lightEndpoint = Matter.OnOffLight(node: rootNode)
   lightEndpoint.eventHandler = { event in
@@ -89,55 +113,124 @@ func main() {
     }
   }
 
+  // (2.55) Generic Switch endpoint exposing the physical lamp button as a
+  // momentary switch. Read-only from Apple Home — automations can trigger on
+  // InitialPress events fired below in the main loop.
+  // let switchEndpoint = Matter.GenericSwitch(node: rootNode)
+
   // (2.6) Create a Mode Select endpoint exposing Off/On/2H/3H/6H.
   // Mode values match hwState directly (Off=0, High=1, Low=2, Night=3),
   // so a write to CurrentMode is handled the same way as a Fan write.
   // Note: Apple Home is not rendering controls for the Mode Select endpoint. 
   // FIXME: A user write on either path will pulse the K1 button — duplicate writes 
   // from both endpoints in quick succession are not currently de-duplicated.
-  let modeSelectEndpoint = Matter.ModeSelector(node: rootNode)
-
-  // modeSelectEndpoint.description = "Humidifier Mode"
-  modeSelectEndpoint.eventHandler = { event in
-    guard case .currentMode = event.attribute else { return }
-    let targetMode = UInt8(event.value & 0xFF)
-    print("[HUMI] 🪀 🪀 🪀 🪀 CurrentMode received \(event.value)")
-    // TODO: multi-press to reach target. Matching the Fan handler's
-    // single-press behavior for now (see commented-out logic above).
-    let presses = (Int(targetHw) - Int(hwState) + 5) % 5
-    for i in 0..<presses {
-      if i > 0 { delay_ms(200) }
+  
+  // (2.6) Standalone Mode Select endpoint (device type 0x0027).
+  // Re-enabled to expose the custom Off/On/1H/3H/6H modes to Apple Home
+  // as a separate tile, since the Air Purifier endpoint's ModeSelect
+  // cluster is not rendered by Home (Home only surfaces FanControl on
+  // Air Purifier endpoints). The two ModeSelect clusters share the same
+  // global SupportedModesManager delegate so the mode lists are identical.
+  // let modeSelectEndpoint = Matter.ModeSelectDevice(node: rootNode)
+  // modeSelectEndpoint.eventHandler = { event in
+  //   guard case .currentMode = event.attribute else { return }
+  //   let targetMode = UInt8(event.value & 0xFF)
+  //   print("[HUMI] 🪀 CurrentMode received target=\(event.value) hwState=\(hwState)")
+  //   let presses = (Int(targetMode) - Int(hwState) + 5) % 5
+  //   print("[HUMI] 🪀 computed presses=\(presses)")
+  //   for i in 0..<presses {
+  //     if i > 0 { delay_ms(200) }
+  //     fanButton.press()
+  //   }
+  //   hwState = targetMode
+  // }
+  // TEMPORARY KLUDGE; use an onOff light to at least have a UI element in the home app capable of driving the mist button.
+  // Renders in Apple Home as a round light icon — single press per Home toggle.
+  // hwState/mistIsOn drift after multiple physical presses is a known UX limitation
+  // (see commented Air Purifier / Mode Select alternatives below for richer options).
+  let mistEndpoint = Matter.OnOffLight(node: rootNode)
+  var mistIsOn: Bool = false
+  mistEndpoint.eventHandler = { event in
+    guard case .onOff = event.attribute else { return }
+    let targetOn = event.value != 0
+    if targetOn != mistIsOn {
       fanButton.press()
-    }    
-    hwState = targetMode
+      mistIsOn = targetOn
+    }
   }
+
+  // Air Purifier endpoint (device type 0x002D) with three clusters on one
+  // endpoint: FanControl (mandatory for 0x002D), OnOff, and ModeSelect.
+  // Apple Home renders the device as an air purifier; the OnOff cluster
+  // gives a simple toggle, and ModeSelect surfaces the 5-state hardware
+  // cycle (Off/On/1H/3H/6H) in the accessory's settings page.
+  // let mistEndpoint = Matter.AirPurifier(node: rootNode)
+  // var mistIsOn: Bool = false
+  // mistEndpoint.eventHandler = { event in
+  //   switch event.attribute {
+  //   case .onOff:
+  //     let targetOn = event.value != 0
+  //     print("[HUMI] 💧 AirPurifier OnOff target=\(targetOn) mistIsOn=\(mistIsOn)")
+  //     if targetOn != mistIsOn {
+  //       fanButton.press()
+  //       mistIsOn = targetOn
+  //     }
+  //   case .currentMode:
+  //     let targetMode = UInt8(event.value & 0xFF)
+  //     print("[HUMI] 🪀 AirPurifier CurrentMode target=\(targetMode) hwState=\(hwState)")
+  //     let presses = (Int(targetMode) - Int(hwState) + 5) % 5
+  //     for i in 0..<presses {
+  //       if i > 0 { delay_ms(200) }
+  //       fanButton.press()
+  //     }
+  //     hwState = targetMode
+  //     mistIsOn = (hwState != 0)
+  //   case .fanMode, .percentSetting:
+  //     // FanControl writes from Home; treat as a mode change request.
+  //     print("[HUMI] 🌬️ AirPurifier FanControl attribute received value=\(event.value)")
+  //   default:
+  //     return
+  //   }
+  // }
 
   // (3) Add the endpoints to the node
   // rootNode.addEndpoint(fanEndpoint)    // TODO GUARD CUIDAO! MOSCA FIXME
-  rootNode.addEndpoint(modeSelectEndpoint)
+  // rootNode.addEndpoint(modeSelectEndpoint)
+  rootNode.addEndpoint(mistEndpoint)
   rootNode.addEndpoint(lightEndpoint)
+  // rootNode.addEndpoint(switchEndpoint)
 
   // (4) Start Matter
   let app = Matter.Application()
   app.rootNode = rootNode
   app.start()
 
-  // Main loop: poll physical buttons and sync state back to Matter.
+  // Main loop: poll panel sensors and sync state back to Matter.
   // Keep local variables alive — workaround for swift-matter-examples issue #10.
+  var lastMistState: UInt8 = 255  // sentinel — forces a sync on first read
   while true {
-    if matter_fan_button_was_pressed() {
-      print("[HUMI] button 1 pressed yay 👍 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏 👏👏👏  ")
-      hwState = (hwState + 1) % 5
-      print("[HUMI] hwState is: \(hwState)")
-      // fanEndpoint.updateFanMode(modeForHardwareState[Int(hwState)])
-      modeSelectEndpoint.updateCurrentMode(hwState)
-      fanButton.press() // Simulate the button press on the hardware
+    // MIST: state-based sensing from the panel-LED encoding. Each iteration
+    // reads the current hardware mode (Off/On/1H/3H/6H) and only acts on
+    // changes. No edge detection, no debouncing, no over-correcting.
+    let newMistState = matter_read_mist_state()
+    if newMistState != lastMistState {
+      print("[HUMI] 💧 mist state change \(lastMistState) → \(newMistState)")
+      hwState = newMistState
+      let newOn = (hwState != 0)
+      if newOn != mistIsOn {
+        mistIsOn = newOn
+        mistEndpoint.update(mistIsOn)
+      }
+      lastMistState = newMistState
     }
+
+    // LIGHT: still edge-detected (no LED feedback on the panel for this button).
     if matter_lamp_button_was_pressed() {
-      print("[HUMI] button 2 pressed yay 👍 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾 👾👾👾  ")
+      print("[HUMI] 💡 LIGHT button press detected")
       lampIsOn = !lampIsOn
       lightEndpoint.update(lampIsOn)
-      lampButton.press()  // Simulate the button press on the hardware 
+      // switchEndpoint.press()
+      // lampButton.press()  // Simulate the button press on the hardware — disabled: see fanButton.press above
     }
     delay_ms(200)
   }

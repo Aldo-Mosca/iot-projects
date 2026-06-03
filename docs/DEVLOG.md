@@ -353,3 +353,88 @@ After tying grounds, the loop stopped — but physical panel presses are no long
 **Why:** the GPIO no longer connects directly to the button contacts — it drives an N-channel MOSFET gate. With the MOSFET in series, the polarity sense is reversed: HIGH on the gate turns the FET on and shorts the button (press), LOW turns it off (released). The original code's idle-HIGH / press-LOW would have left the FET conducting at all times, holding the button perpetually pressed.
 
 No call-site changes were needed — the public API of `ButtonShunt` is unchanged. The header comment in the file was updated to describe MOSFET-gate semantics instead of the older direct-connect/open-drain rationale.
+
+### 2026-06-02 — Data-model naming cleanup + Air Purifier endpoint scaffolded
+
+**Endpoint facades renamed to Matter spec device-type names**
+
+Audited the three layers of the data model (clusters in `Matter/Clusters.swift`, low-level endpoint pointer wrappers in `Matter/Node.swift`, high-level endpoint facades in `Matter/Matter.swift`) and confirmed the structure already conforms to the Matter spec — clusters are clusters, endpoints are endpoints. The confusion was purely naming. Two endpoint facades used names that collided (or threatened to collide) with Matter cluster names.
+
+Renamed to disambiguate, using the Matter spec's device-type names:
+
+| Before | After | Reason |
+|---|---|---|
+| `Matter.ModeSelector` | `Matter.ModeSelectDevice` | Frees the bare name; matches esp-matter's `mode_select_device` namespace |
+| `Matter.Switch` | `Matter.GenericSwitch` | Matches spec device type "Generic Switch"; frees `Switch` for a future cluster wrapper for the Switch cluster (0x003B) |
+
+`Matter.OnOffLight` and `Matter.Fan` were left unchanged — both already match the spec's device-type names cleanly (the matching clusters are named `OnOff` and `FanControl`, no collision).
+
+Touched 5 sites across `Matter/Matter.swift`, `main/Main.swift`, and `main/borrador.swift`.
+
+**Air Purifier endpoint (device type 0x002D) added**
+
+Scaffolded a new endpoint type so the humidifier can be advertised to Apple Home as an Air Purifier instead of a Fan. The Air Purifier device type uses the same FanControl cluster as the Fan device type — only the device-type ID and the Apple Home rendering differ.
+
+New code:
+
+- `Matter/MatterInterface.cpp` — `create_humidifier_air_purifier_endpoint()` calling `esp_matter::endpoint::air_purifier::create()`.
+- `Matter/MatterInterface.h` — prototype declaration.
+- `Matter/Node.swift` — `struct MatterAirPurifier: MatterConcreteEndpoint` with `deviceTypeId = 0x002D`.
+- `Matter/Matter.swift` — `class Matter.AirPurifier: Endpoint`. Exposes `updateFanMode()` and reuses the existing `matter_fan_update_mode` C shim (both endpoint types operate on the FanControl cluster).
+- `main/Main.swift` — commented-out `airPurifierEndpoint` block parallel to the existing Fan one.
+
+Filter monitoring clusters (HepaFilter 0x0071, ActivatedCarbon 0x0072) are not added — they're spec-optional and not relevant for a humidifier.
+
+**Caveats when activating Air Purifier**
+
+- Apple Home support for the Air Purifier device type landed in iOS 18. Test devices on earlier iOS may render as a fallback (Fan or generic).
+- FanControl's FanMode enum maxes out at four functional values (Off/Low/Med/High plus On/Auto). Our 5-state hardware (Off/On/1H/3H/6H) still doesn't map cleanly — the placeholder handler in the commented Air Purifier block carries the same mapping bug we worked around in the Mode Select / OnOff iterations.
+
+**Side topic: physical-press detection still unsolved**
+
+Discussed the wiring options after last session's discovery that the K1/K2 lines may not pulse LOW on panel presses (new green board may use matrix scan). Advised:
+
+1. Probe each candidate line with a meter during a panel press before re-wiring.
+2. The most promising tap point is a mode-indicator LED drive line — state-change is unambiguous per mode, and LEDs are easy to identify on the green board.
+3. When tapping, use a high-impedance divider (100kΩ/10kΩ) plus a small filter cap (100nF to GND) and consider a Schmitt-trigger buffer or optocoupler for clean digital edges and isolation.
+
+No code changes from this part — user is probing.
+
+**Gotcha: commissioning BLE is range-sensitive**
+
+Spent ~30 minutes chasing a "Connecting…" hang in the Apple Home pairing flow. Symptoms:
+
+- BLE pairing reaches PASE completion successfully.
+- Then ~60s of complete silence on the log, followed by `chip[FS]: Fail-safe timer expired` and `Commissioning failed (attempt 1): 32` (CHIP_ERROR_TIMEOUT).
+- Subsequent retries fail even earlier with `PASESession timed out` and `BLE GAP connection terminated (con 0 reason 0x208)` — HCI reason 0x08 = connection timeout.
+
+Initial hypotheses chased and ruled out: network credentials, Thread Border Router presence, sdkconfig transport selection. Actual root cause: **the BLE link itself was dropping mid-handshake.** Network commissioning never started because BLE died before WiFi/Thread credentials could be delivered over the same BLE channel.
+
+**Fix:** move the ESP32-C6 within ~1 m of the iPhone, line of sight, before tapping "Add Accessory." Commissioning then completes normally and the device transitions to Thread/WiFi operational mode where range stops mattering.
+
+**For future debugging:** if you see PASE completing followed by 60s of silence and a fail-safe expiry, suspect BLE range/interference before chasing certificates or network setup. The C6's onboard antenna is small and 2.4 GHz BLE during commissioning is more sensitive than the same chip's operational radio (which uses 802.15.4 / Thread at the same frequency band but with much more aggressive retransmission).
+
+**Air Purifier endpoint activated with stacked clusters (FanControl + OnOff + ModeSelect)**
+
+After commissioning was working, switched the mist control from the OnOffLight kludge over to a real Air Purifier endpoint with multiple clusters on one endpoint — illustrating Matter's "endpoint contains clusters" hierarchy.
+
+**Design:** the existing `Matter.AirPurifier` (device type 0x002D) was extended so the endpoint now carries:
+
+- Identify + Groups (mandatory globals, from `air_purifier::create()`)
+- **FanControl** (mandatory for device type 0x002D, from `air_purifier::create()`)
+- **OnOff** (added manually, no Lighting feature flag)
+- **ModeSelect** (added manually, reusing the existing `sHumidifierModesManager` delegate from the standalone ModeSelect endpoint)
+
+**Implementation notes:**
+
+- `create_humidifier_air_purifier_endpoint()` in `Matter/MatterInterface.cpp` had to be moved past the anonymous namespace holding `sHumidifierModesManager` since the factory now references it.
+- Cluster additions use the lower-level `esp_matter::cluster::on_off::create()` and `esp_matter::cluster::mode_select::create()` rather than any endpoint-level factory. Flags qualified with `esp_matter::CLUSTER_FLAG_SERVER` (not bare `CLUSTER_FLAG_SERVER`) — that namespace isn't pulled in via `using` at the top of the file.
+- `Matter.AirPurifier` Swift facade gained `update(on:)` and `updateCurrentMode(_:)` alongside the existing `updateFanMode(_:)`. All three reuse the corresponding `matter_*_update_*` C shims unchanged — those shims are keyed by `(endpoint_id, cluster_id, attribute_id)`, so they work on any endpoint that hosts the right cluster.
+- The OnOffLight kludge in `main/Main.swift` is commented out; the new `mistEndpoint = Matter.AirPurifier(...)` uses a `switch` over `event.attribute` to dispatch OnOff vs. CurrentMode vs. FanControl writes to different press-logic branches.
+
+**Open issues with the stacked-cluster design (not yet resolved):**
+
+1. **Three views of the same state.** OnOff, CurrentMode, and FanMode are all writable controls expressing variations of "what should the mist do." If Apple Home writes to one, we react with a button press; the other two clusters' attribute values then need to be reconciled so subsequent reads don't disagree. Currently only the path that fired the press updates its tracking variable. The `mistIsOn = (hwState != 0)` line in the CurrentMode branch covers one of the three pairwise sync gaps.
+2. **Apple Home rendering.** Air Purifier's primary tile in Home centers FanControl; OnOff and ModeSelect attributes likely surface only in Settings → Accessory Details. Worth confirming on a fresh re-commission whether Home shows the additional controls at all.
+3. **FanControl writes aren't actuated.** The placeholder handler logs FanControl events but doesn't press the button. If you start using the FanControl tile in Home, you'll need to either implement the mode-to-state mapping or route FanControl writes through the same press logic as ModeSelect.
+4. **Self-press suppression still missing.** A Home write to ModeSelect that calls `fanButton.press()` N times triggers N listen ISRs (when the K2 line is properly grounded), which the main loop's physical-press branch will count as N user presses and bump `hwState` accordingly — double-counting. The earlier "ignoreNext counter" approach is the right fix when you revisit.

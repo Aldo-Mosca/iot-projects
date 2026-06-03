@@ -182,7 +182,32 @@ extension Matter {
 }
 
 extension Matter {
-  class ModeSelector: Endpoint {
+  class AirPurifier: Endpoint {
+    override init(node: Node) {
+      super.init(node: node)
+
+      let ap = MatterAirPurifier(node.innerNode)
+      self.id = Int(ap.id)
+    }
+
+    // Air Purifier uses the same FanControl cluster as Fan, so the same
+    // attribute updater shim works on this endpoint.
+    func updateFanMode(_ mode: UInt8) {
+      matter_fan_update_mode(UInt16(id), mode)
+    }
+
+    // Extra clusters added to this endpoint by create_humidifier_air_purifier_endpoint:
+    func update(on: Bool) {
+      matter_onoff_update(UInt16(id), on)
+    }
+    func updateCurrentMode(_ mode: UInt8) {
+      matter_mode_select_update_current_mode(UInt16(id), mode)
+    }
+  }
+}
+
+extension Matter {
+  class ModeSelectDevice: Endpoint {
     override init(node: Node) {
       super.init(node: node)
 
@@ -197,7 +222,7 @@ extension Matter {
 }
 
 extension Matter {
-  class Switch: Endpoint {
+  class GenericSwitch: Endpoint {
     override init(node: Node) {
       super.init(node: node)
 

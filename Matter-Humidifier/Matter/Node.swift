@@ -159,6 +159,23 @@ struct MatterFan: MatterConcreteEndpoint {
   }
 }
 
+struct MatterAirPurifier: MatterConcreteEndpoint {
+  // Matter spec device type ID for Air Purifier (0x002D).
+  static var deviceTypeId: UInt32 { 0x002D }
+
+  var endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>
+
+  init(_ node: RootNode) {
+    endpoint = create_humidifier_air_purifier_endpoint(
+      node.node, Unmanaged.passRetained(node.context).toOpaque())
+    _endpointDeviceTypeRegistry[UInt(bitPattern: endpoint)] = MatterAirPurifier.deviceTypeId
+  }
+
+  init(_ endpoint: UnsafeMutablePointer<esp_matter.endpoint_t>) {
+    self.endpoint = endpoint
+  }
+}
+
 struct MatterModeSelect: MatterConcreteEndpoint {
   // Matter spec device type ID for Mode Select (0x0027).
   static var deviceTypeId: UInt32 { 0x0027 }
