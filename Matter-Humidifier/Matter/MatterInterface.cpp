@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "BridgingHeader.h"
+#include "hal/gpio_types.h"
 #include <app/clusters/mode-select-server/supported-modes-manager.h>
 #include <app/clusters/switch-server/switch-server.h>
 #include <cstring>
@@ -295,11 +296,20 @@ bool matter_fan_button_was_pressed(void) {
   return false;
 }
 
+// ===== LIGHT button edge detection =====
+// L1 carries the LIGHT button line. With an external 1 kΩ pull-up from L1 to
+// 3V3 dominating the panel's internal pull-down (~10 kΩ), the line sits at
+// ~3 V at idle and drops to ~0 V when the button shorts L1 to GND. That gives
+// a clean HIGH→LOW edge per press, which the negedge ISR catches directly.
+
 void setup_lamp_button_listen_gpio(int32_t gpio_num) {
   gpio_config_t cfg = {};
   cfg.pin_bit_mask = 1ULL << gpio_num;
   cfg.mode = GPIO_MODE_INPUT;
-  cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+  // Internal pull-up DISABLED — the external 1 kΩ pull-up establishes the
+  // idle HIGH. Enabling the internal ~45 kΩ pull-up here would just add a
+  // parallel current path; harmless but pointless.
+  cfg.pull_up_en = GPIO_PULLUP_DISABLE;
   cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
   cfg.intr_type = GPIO_INTR_NEGEDGE;
   gpio_config(&cfg);

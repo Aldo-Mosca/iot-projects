@@ -36,6 +36,11 @@ let fanButtonGPIO: Int32 = 2
 // XIAO ESP32-C6: D7 = GPIO17. (GPIO17 is the chip's default UART0 RX, but the
 // XIAO uses USB-Serial-JTAG for `idf.py monitor`, so this is harmless.)
 let lightButtonInputGPIO: Int32 = 17
+// Tried = 19 (intended pin D8) — coincided with pairing failures. Reverted as
+// a baseline; if pairing is now stable, the GPIO19 mapping (or some side
+// effect of it) was the culprit. D8's actual GPIO number on the XIAO
+// ESP32-C6 isn't datasheet-verified for this project.
+// let lightButtonInputGPIO: Int32 = 19
 
 // L2 — MIST mode row selector. Three discrete voltage levels on the panel cable:
 //   ~0.0 V  → device off (state 0)
@@ -56,9 +61,7 @@ let mistColAGPIO: Int32 = 18
 // XIAO ESP32-C6: D5 = GPIO23.
 let mistColBGPIO: Int32 = 23
 
-// ===== Legacy listen pins (superseded by panel sensing above) =====
-// Old K1/K2 listen wiring proved noise-prone and unreliable on the new green
-// board. Replaced by panel-LED state sensing on L2/L3/L4 (mist) and a clean
+// Panel-LED state sensing on L2/L3/L4 (mist) and a clean
 // button-line read on L1 (light). The shunt outputs (lampButtonGPIO,
 // fanButtonGPIO) above are unchanged.
 //
@@ -66,10 +69,6 @@ let mistColBGPIO: Int32 = 23
 // (only D0/D1/D2 happen to match). D5=GPIO23, D7=GPIO17, D10=GPIO18, etc.
 // Always cross-reference Seeed's datasheet's silkscreen-to-GPIO table.
 //
-// let lampListenGPIO: Int32 = 1    // was D1 = GPIO1
-// let fanListenGPIO: Int32 = 21    // was wrongly written as 21 (and earlier
-//                                  // as 3); pin unused under the new sensing
-//                                  // approach.
 
 // Simulates a momentary button press by briefly driving a GPIO high.
 // GPIO drives an N-channel MOSFET gate: HIGH → MOSFET conducts → shorts the
@@ -102,7 +101,7 @@ final class ButtonShunt {
   //   // END DEBUG
   // }
 
-  func press(durationMs: UInt32 = 600) {
+  func press(durationMs: UInt32 = 500) {
     gpio_set_level(gpio_num_t(rawValue: gpio), 1)  // drive high — MOSFET on, press
     print("[HUMI] 🚩 🚩 🚩 🚩 🚩 BUTTON PRESS \(gpio) 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 🚩 ")
     delay_ms(durationMs)

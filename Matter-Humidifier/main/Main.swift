@@ -210,7 +210,7 @@ func main() {
   var lastMistState: UInt8 = 255  // sentinel — forces a sync on first read
   var pendingMistState: UInt8 = 0
   var pendingMistCount: Int = 0
-  let kMistDebounceCount = 2      // consecutive identical reads required (≈ 400 ms)
+  let kMistDebounceCount = 2      // consecutive identical reads required (≈ 400 ms at 200 ms tick)
   while true {
     // MIST: state-based sensing from the panel-LED encoding. Each iteration
     // reads the current hardware mode (Off/On/1H/3H/6H) and only reports a
