@@ -17,14 +17,6 @@ let fanButtonGPIO: Int32 = 2
 
 // ===== Panel sensing inputs (via JST PH002 splice cable) =====
 // See docs/WIRING-UPDATE.md for the cable pin map and divider schematic.
-// All inputs placed on D5–D10 (GPIO5–GPIO10) per Seeed-forum guidance — D0–D4
-// are unsafe for I/O on the XIAO ESP32-C6 (boot strapping / SPI flash).
-// D8/D9 (GPIO8/GPIO9) are also avoided here because they're ESP32-C6
-// strapping pins (BOOT button on GPIO9; JTAG mux on GPIO8) and can prevent
-// boot if pulled LOW by the panel at startup.
-
-// ===== Panel sensing inputs (via JST PH002 splice cable) =====
-// See docs/WIRING-UPDATE.md for the cable pin map and divider schematic.
 // Three digital inputs placed on D5/D7/D10 (safe per Seeed forum: D5–D10
 // are general-I/O-safe). The one ADC input (L2) has to go on D1 because
 // although D0–D4 are flagged as boot/flash-related and generally unsafe,
@@ -36,11 +28,6 @@ let fanButtonGPIO: Int32 = 2
 // XIAO ESP32-C6: D7 = GPIO17. (GPIO17 is the chip's default UART0 RX, but the
 // XIAO uses USB-Serial-JTAG for `idf.py monitor`, so this is harmless.)
 let lightButtonInputGPIO: Int32 = 17
-// Tried = 19 (intended pin D8) — coincided with pairing failures. Reverted as
-// a baseline; if pairing is now stable, the GPIO19 mapping (or some side
-// effect of it) was the culprit. D8's actual GPIO number on the XIAO
-// ESP32-C6 isn't datasheet-verified for this project.
-// let lightButtonInputGPIO: Int32 = 19
 
 // L2 — MIST mode row selector. Three discrete voltage levels on the panel cable:
 //   ~0.0 V  → device off (state 0)
@@ -87,19 +74,6 @@ final class ButtonShunt {
     gpio_config(&cfg)
     gpio_set_level(gpio_num_t(rawValue: gpio), 0)  // start released (MOSFET off)
   }
-
-  // // DEBUG: Temporary: blink the pin so you can confirm it's driving correctly
-  //   print("DEBUG START 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 💃🕺 ")
-  //   for _ in 0..<5 {
-  //       gpio_set_level(gpio_num_t(rawValue: gpio), 1)
-  //       vTaskDelay(50)
-  //       gpio_set_level(gpio_num_t(rawValue: gpio), 0)
-  //       vTaskDelay(50)
-  //   }
-  //   gpio_set_level(gpio_num_t(rawValue: gpio), 1)  // back to idle high
-  //   print("DEBUG END 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫 🍄‍🟫  ")
-  //   // END DEBUG
-  // }
 
   func press(durationMs: UInt32 = 500) {
     gpio_set_level(gpio_num_t(rawValue: gpio), 1)  // drive high — MOSFET on, press

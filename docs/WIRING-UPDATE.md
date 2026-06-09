@@ -3,7 +3,7 @@
 **Date:** 2026-06-02
 **Hardware:** Seeed Studio XIAO ESP32-C6 + new humidifier model (2 buttons, 4 mode LEDs, JST PH002 7-pin panel cable)
 
-This document captures the **new** wiring after switching MIST-state detection from the K1/K2 button-listen-ISR approach to direct panel-LED state sensing. The old approach proved unreliable on the new green board (noise-driven spurious ISRs, no clean physical-button line on the cable).
+This document captures the **new** wiring after switching MIST-state detection from the K1/K2 button-listen-ISR approach to direct panel-LED state sensing. The old approach proved unreliable on the new control board (noise-driven spurious ISRs, no clean physical-button line on the cable).
 
 ---
 
@@ -11,13 +11,13 @@ This document captures the **new** wiring after switching MIST-state detection f
 
 | Function | Before | After |
 |---|---|---|
-| MIST state sync (device → Matter) | Listen-ISR on K2 line — noisy, dropped events, false triggers | Poll 3 panel-LED encoding lines (L2/L3/L4) every main-loop tick |
-| LIGHT press detect (device → Matter) | Listen-ISR on K1 line — noisy | Negedge ISR on the L1 panel-cable line — clean direct-from-button signal |
+| MIST state sync (device → Matter) | Listen-ISR on S1 line — noisy, dropped events, false triggers | Poll 3 panel-LED encoding lines (L2/L3/L4) every main-loop tick |
+| LIGHT press detect (device → Matter) | Listen-ISR on S2 line — noisy | Negedge ISR on the L1 panel-cable line — clean direct-from-button signal |
 | MIST shunt (Matter → device) | MOSFET on K2 | **Unchanged** — same MOSFET on K2 |
 | LIGHT shunt (Matter → device) | MOSFET on K1 | **Unchanged** — same MOSFET on K1 |
 | ESP power | USB-C from laptop | Optionally from panel cable L6 (5 V) once verified |
 
-The two output paths (MOSFET shunts driving K1/K2 contacts) are unchanged. Only the input/sensing paths are new.
+The two output paths (MOSFET shunts driving S1/S2 contacts) are unchanged. Only the input/sensing paths are new.
 
 ---
 
@@ -77,7 +77,7 @@ Although ADC1 has channels 0–6 at the chip level (GPIO0–GPIO6), **only D0/D1
 | LIGHT button shunt (existing) | **D0** | 0 | OUTPUT | LIGHT MOSFET gate |
 | MIST button shunt (existing) | **D2** | 2 | OUTPUT | MIST MOSFET gate |
 | **L2** MIST row sensor (ADC) | **D1** | 1 | INPUT (ADC1_CH1) | L2 via 100 k / 100 k divider |
-| **L1** LIGHT button sensor | **D7** | 17 | INPUT (negedge ISR) | L1 via 100 k / 100 k divider |
+| **L1** LIGHT button sensor | **D7** | 17 | INPUT (negedge ISR) | L1 via external 1 kΩ pull-up to 3.3 V (see note) |
 | **L3** MIST col A sensor | **D10** | 18 | INPUT (digital) | L3 via 100 k / 100 k divider |
 | **L4** MIST col B sensor | **D5** | 23 | INPUT (digital) | L4 via 100 k / 100 k divider |
 | Common ground | **GND** | — | — | L5 |
@@ -107,12 +107,13 @@ Panel pin (L1, L2, L3, or L4)
 - **Presents 200 kΩ load** to the panel — invisible to the panel's driver circuit.
 - **Optional 100 nF cap to GND** at the ESP input filters HF noise. Forms ~10 µs RC time constant with the 100 kΩ source impedance — invisible to all our signal timing but kills RFI pickup.
 
-### L2 sees the ADC; L1/L3/L4 see digital GPIOs
+### L2 sees the ADC; L3/L4 see digital GPIOs; L1 uses an external pull-up
 
-The same divider topology works for all four. What differs is how the ESP firmware reads each pin:
+The same divider topology works for L2, L3, and L4. L1 is different:
 
 - **L2 → ADC1 channel 1** (D1/GPIO1). Configured with **12 dB attenuation** (~0…3.3 V usable range) and curve-fitting calibration. The firmware reads in millivolts and thresholds at 200 mV (off) and 1300 mV (which mode pair).
-- **L1, L3, L4 → digital GPIO**. After the divider, 0.15 V (LED active) and 2.25 V (LED inactive or button idle) are unambiguously below / above the GPIO digital threshold (~1.4 V on 3.3 V logic).
+- **L3, L4 → digital GPIO**. After the divider, 0.15 V (LED active) and 2.25 V (LED inactive) are unambiguously below / above the GPIO digital threshold (~1.4 V on 3.3 V logic).
+- **L1 → D7/GPIO17 — external 1 kΩ pull-up, no voltage divider.** The panel drives L1 with an active ~1 kΩ pull-down at all times (both idle and pressed), making the 100 kΩ/100 kΩ divider useless (idle output ≈ 0 V). An external 1 kΩ pull-up from L1 to XIAO 3.3 V brings idle voltage to ~1.65 V. When the button is pressed it adds ~6 kΩ parallel to the panel pull-down, shifting voltage to ~1.53 V — only 120 mV below idle. Both values sit at the ESP32-C6 Schmitt threshold, making reliable edge detection impossible. **LIGHT panel-press detection is one-way only (Home → device works; device → Home does not).** The ISR is registered in firmware but fires spuriously; the `setup_lamp_button_listen_gpio()` call in `main/Main.swift` should be commented out on the next code change.
 
 ---
 
@@ -148,11 +149,12 @@ The XIAO and the humidifier panel **must share GND**. Without this, the listen-s
 
 After wiring, with the device powered on:
 
-1. **No physical interaction.** `idf.py monitor` should be quiet — no `[HUMI] 💧 mist state change` lines, no `[HUMI] 💡 LIGHT button press detected` lines. If you see continuous state-change messages with no panel interaction, the dividers are off or the ground is bad.
+1. **No physical interaction.** `idf.py monitor` should be quiet — no `[HUMI] 💧 mist state change` lines. If you see continuous state-change messages with no panel interaction, the dividers are off or the ground is bad. (Spurious `[HUMI] 💡 LIGHT button press detected` lines may appear even at idle due to the L1 Schmitt-threshold issue — this is a known limitation.)
 2. **Press MIST once.** Should see exactly one `[HUMI] 💧 mist state change 0 → 1` line (or whatever the new state is). Each subsequent press should produce exactly one change line.
-3. **Press LIGHT once.** Should see exactly one `[HUMI] 💡 LIGHT button press detected` line.
+3. **Press LIGHT once.** Physical panel LIGHT presses are NOT reliably detected — see "L1 LIGHT button detection" note above. Skip this verification step.
 4. **Long-press either button (1+ s).** Device turns off. Should see `[HUMI] 💧 mist state change N → 0`.
 5. **From Apple Home: toggle the mist tile.** Within ~200 ms you should see the MOSFET pulse, the panel LED change, and the corresponding `mist state change` line confirm the state was sensed back.
+6. **From Apple Home: toggle the light tile.** The LIGHT MOSFET should pulse (D0/GPIO0) and the humidifier lamp should turn on or off.
 
 ---
 
@@ -160,8 +162,8 @@ After wiring, with the device powered on:
 
 The following constants and code paths are superseded but kept commented for reference:
 
-- `lampListenGPIO` (was on D1/GPIO1) → no longer used. The new `mistRowGPIO` lives on **D5/GPIO5** (the old D1 assignment would have been in the unsafe boot/flash range anyway).
-- `fanListenGPIO` (was on D3, miswritten as GPIO21 — XIAO ESP32-C6's D-numbers map 1:1 to GPIO numbers, so D3 = GPIO3) → no longer used. The new `lightButtonInputGPIO` lives on **D6/GPIO6**.
+- `lampListenGPIO` (was on D1/GPIO1) → no longer used. The new `mistRowGPIO` lives on **D1/GPIO1** (same physical pin, repurposed from listen ISR to ADC input).
+- `fanListenGPIO` (was listed as GPIO21 — that was an error; XIAO D-to-GPIO mapping is not 1:1 past D2) → no longer used. The new `lightButtonInputGPIO` lives on **D7/GPIO17**.
 - `setup_fan_button_listen_gpio()` and `matter_fan_button_was_pressed()` are still defined in `MatterInterface.cpp` but no longer called.
 - `setup_lamp_button_listen_gpio()` and `matter_lamp_button_was_pressed()` are still in use, now backing the LIGHT button input on its new GPIO. The function was made idempotent re: `gpio_install_isr_service()` so it can be called standalone.
 - `Main.swift`'s main loop now polls `matter_read_mist_state()` per iteration and only reports state *changes* to Matter, instead of edge-detecting transient button events.

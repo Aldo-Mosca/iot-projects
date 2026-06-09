@@ -81,20 +81,8 @@ esp_err_t matter_mode_select_update_current_mode(uint16_t endpoint_id, uint8_t m
 // button is pressed so Home automations can react.
 esp_err_t matter_switch_press(uint16_t endpoint_id);
 
-// Configure a GPIO as input with a falling-edge interrupt to detect physical K2 (fan) presses.
-// Also installs the GPIO ISR service — call this before setup_lamp_button_listen_gpio.
-// Superseded by setup_mist_panel_sensors / matter_read_mist_state below — the
-// listen-on-K2 approach was unreliable on the new green board. Kept for reference.
-void setup_fan_button_listen_gpio(int32_t gpio_num);
-
-// Returns true (and clears the latch) if a physical K2 (fan) press was detected since last call.
-// Superseded — see matter_read_mist_state.
-bool matter_fan_button_was_pressed(void);
-
 // Configure a GPIO as input with a falling-edge interrupt to detect physical K1 (lamp) presses.
-// ISR service must already be installed (call setup_fan_button_listen_gpio first).
-// Still used — but now called with lightButtonInputGPIO (D3/GPIO21) for the
-// LIGHT panel button, not the original K1 listen pin.
+// Installs the GPIO ISR service if not already done.
 void setup_lamp_button_listen_gpio(int32_t gpio_num);
 
 // Returns true (and clears the latch) if a physical K1 (lamp) press was detected since last call.

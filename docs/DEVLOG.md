@@ -438,3 +438,287 @@ After commissioning was working, switched the mist control from the OnOffLight k
 2. **Apple Home rendering.** Air Purifier's primary tile in Home centers FanControl; OnOff and ModeSelect attributes likely surface only in Settings → Accessory Details. Worth confirming on a fresh re-commission whether Home shows the additional controls at all.
 3. **FanControl writes aren't actuated.** The placeholder handler logs FanControl events but doesn't press the button. If you start using the FanControl tile in Home, you'll need to either implement the mode-to-state mapping or route FanControl writes through the same press logic as ModeSelect.
 4. **Self-press suppression still missing.** A Home write to ModeSelect that calls `fanButton.press()` N times triggers N listen ISRs (when the K2 line is properly grounded), which the main loop's physical-press branch will count as N user presses and bump `hwState` accordingly — double-counting. The earlier "ignoreNext counter" approach is the right fix when you revisit.
+
+### 2026-06-03 — Panel-LED sensing pivot; new panel cable; pin assignments locked
+
+**Hardware change: new humidifier unit with JST PH002 7-pin panel cable**
+
+The test unit was replaced. The new unit ships a 7-wire flat cable (JST PH002) that connects the front-panel PCB to the control board. All sensing and shunting now routes through this cable. A debug splice cable was made that taps all 7 lines without breaking the circuit.
+
+Panel cable map:
+
+| Pin | Signal | Notes |
+|---|---|---|
+| L1 | LIGHT (S2) button line | Idle ~5 V via panel pull-up; momentarily 0 V on press |
+| L2 | MIST row selector (analog) | 0 V = off, ~2.2 V = modes 3H/6H, ~3.1 V = modes On/1H |
+| L3 | MIST col A (digital) | LOW when mode is On or 3H |
+| L4 | MIST col B (digital) | LOW when mode is 1H or 6H |
+| L5 | GND | Must tie to XIAO GND — see "common ground" note |
+| L6 | +5 V panel power | Optional XIAO power source |
+| L7 | (unused) | ~55 mV @ 50 kHz noise from SMPS; no useful signal |
+
+**MIST state detection pivoted from button-listen ISR to panel-LED sensing**
+
+The K1/K2 button-line ISR approach failed on the new board. Physical button presses do not produce clean LOW pulses on the button lines accessible from the panel cable — the new control board's MCU scans the matrix internally and the line transitions are either absent or too noisy for edge detection.
+
+New approach: read three lines from the panel cable every main-loop tick and decode the active LED state. The panel uses a 2×2 matrix encoding:
+
+- **L2 (row):** analog voltage selects which LED pair is active
+- **L3/L4 (columns):** digital levels select which LED within the pair is active
+
+Decoding table (after 100kΩ/100kΩ divider halves all voltages):
+
+| mv range | col_a (L3 LOW?) | col_b (L4 LOW?) | hwState |
+|---|---|---|---|
+| < 200 | — | — | 0 (Off) |
+| > 1300 | yes | no | 1 (On) |
+| > 1300 | no | yes | 2 (1H) |
+| 200–1300 | yes | no | 3 (3H) |
+| 200–1300 | no | yes | 4 (6H) |
+
+Key guard: `exactly_one_col_active = (col_a_lo != col_b_lo)`. If both columns are LOW or both are HIGH, the read is treated as Off regardless of L2 — this rejects the panel's ~10 s LED refresh blip that briefly lifts L2 without changing the column lines.
+
+**ADC + calibration**
+
+`setup_mist_panel_sensors()` in `Matter/MatterInterface.cpp` initialises the ESP-IDF `adc_oneshot` API on ADC1 channel 1 (GPIO1/D1) with 12 dB attenuation (0–3.3 V usable range) and curve-fitting calibration. The read function averages 8 samples per poll to reject single-sample noise.
+
+**Pin assignments — final (confirmed from Seeed datasheet)**
+
+XIAO ESP32-C6 silkscreen D-numbers do **not** generally map 1:1 to GPIO numbers past D2. Confirmed mapping used in firmware:
+
+| XIAO pin | GPIO | Function |
+|---|---|---|
+| D0 | 0 | LIGHT MOSFET shunt OUTPUT |
+| D1 | 1 | L2 MIST row ADC (ADC1_CH1) |
+| D2 | 2 | MIST MOSFET shunt OUTPUT |
+| D7 | 17 | L1 LIGHT button ISR input |
+| D10 | 18 | L3 MIST col A digital input |
+| D5 | 23 | L4 MIST col B digital input |
+| GND | — | L5 (common ground — mandatory) |
+
+**All sensor lines need voltage dividers** (panel outputs up to ~5 V; GPIO max 3.6 V). Standard circuit per line: 100 kΩ series + 100 kΩ to GND + optional 100 nF filter cap.
+
+**Common ground is non-negotiable.** Without tying XIAO GND to L5, all listen GPIOs float relative to the panel and produce constant spurious ISR fires. This burned two separate debugging sessions — see grounding note in memory files.
+
+**Debounce added to MIST sensing**
+
+`Main.swift` main loop wraps `matter_read_mist_state()` in a 2-consecutive-read debounce (≈ 400 ms at 200 ms tick). A new state is only committed to `hwState` and propagated to Matter once the same value is read twice in a row. This filters the panel's empty-tank transient: when the tank runs dry, the hardware briefly flashes to mode-1 voltage on L4 before cutting off — without debounce this registers as a spurious On→Off→On transition.
+
+**Watchdog trip root-caused: `delay_ms(5)` = 0 FreeRTOS ticks**
+
+At default 100 Hz FreeRTOS tick rate (10 ms/tick), `delay_ms(5)` calls `vTaskDelay(pdMS_TO_TICKS(5))` which rounds down to 0 ticks — a no-op. The main loop becomes a busy-spin, starving the Matter background task and tripping the watchdog. Fixed by using `delay_ms(200)` for the main polling tick.
+
+**ButtonShunt MOSFET polarity note**
+
+Gate HIGH → MOSFET conducts → button shorted (press). Gate LOW → released. Init sets GPIO LOW (idle released state).
+
+---
+
+### 2026-06-04 — AirPurifier endpoint active; stacked-cluster design; watchdog and loop debugging
+
+**Endpoint configuration**
+
+Activated the `Matter.AirPurifier` endpoint (device type 0x002D) with three clusters stacked on one endpoint: FanControl (mandatory), OnOff (added manually), and ModeSelect (added manually, reusing `sHumidifierModesManager`). Apple Home renders an air-purifier tile. ModeSelect `StandardNamespace` was set to 0x0040 (Common Mode Namespace) to try to make Home render the custom mode list — it reads the namespace correctly in Matter logs but still does not surface SupportedModes in any Home UI element.
+
+**`nullable<uint16_t>` usage clarification**
+
+`nullable<T>` in esp-matter is a global-namespace class, not `chip::app::DataModel::Nullable`. Constructor form: `nullable<uint16_t>(ns)`. Used in `set_mode_select_standard_namespace()` helper.
+
+**Compile fix: `CLUSTER_FLAG_SERVER` scope**
+
+Must qualify as `esp_matter::CLUSTER_FLAG_SERVER` — not visible as a bare name despite `using namespace esp_matter` elsewhere in the file.
+
+**Feedback loop after hardware reconnect**
+
+On reconnecting the humidifier, the Matter console logged a non-stop sequence alternating between `mist state change 3 → 4` and `4 → 3`. Isolated to a **loose wire on L4** (MIST col B) — L4 was intermittently floating, making col_b_lo toggle randomly and causing the state decoder to oscillate between two valid states. Reseating the L4 wire on the breadboard resolved it entirely.
+
+---
+
+### 2026-06-05 — ModeSelect UI investigation; OnOff kludge reinstated; code committed
+
+**ModeSelect cluster never renders SupportedModes in Apple Home**
+
+Two attempts:
+
+1. Standalone `ModeSelectDevice` endpoint (device type 0x0027) with `HumidifierModesManager` delegate — Home reads `FeatureMap`, `ClusterRevision`, `Description`, `CurrentMode` but never reads `SupportedModes`.
+2. ModeSelect cluster added to the AirPurifier endpoint — same result; Home renders the air-purifier FanControl tile but the extra cluster is invisible.
+
+Matter chip-tool confirmed the cluster and its modes are present and readable at the protocol level. The limitation appears to be Apple Home's own rendering policy: it does not surface third-party custom mode lists regardless of `StandardNamespace` value tested (0x0000, 0x0040). This is an Apple Home ecosystem limitation, not a firmware bug.
+
+**Decision: revert to OnOffLight kludge for MIST control surface**
+
+Two `Matter.OnOffLight` endpoints are now the active configuration:
+- `mistEndpoint`: MIST on/off, device type 0x0100 (renders as a round light icon in Home)
+- `lightEndpoint`: LIGHT/lamp on/off, same device type
+
+The AirPurifier, FanControl, ModeSelectDevice, and GenericSwitch code paths are all preserved as commented-out blocks in `main/Main.swift` and `Matter/MatterInterface.cpp` for future revival.
+
+`rootNode.addEndpoint(mistEndpoint)` and `rootNode.addEndpoint(lightEndpoint)` are the only active endpoint additions.
+
+**Commission and verify**
+
+Device repaired with Apple Home after the kludge change. Both round-button tiles appear and correctly drive the respective MOSFET shunts when toggled.
+
+**Commit: "Final version with no LIGHT button detection"**
+
+Staged and pushed:
+- `Matter/Matter.swift` — AirPurifier, ModeSelectDevice, GenericSwitch facades (scaffolded, inactive)
+- `Matter/MatterInterface.cpp` — ADC+panel sensing, stacked-cluster factory, ModeSelect namespace helper
+- `Matter/MatterInterface.h` — all shim prototypes
+- `Matter/Node.swift` — MatterAirPurifier struct, MatterConcreteEndpoint typo fix
+- `main/ButtonShunt.swift` — final pin constants
+- `main/Main.swift` — LED-state polling, OnOff kludge active, alternatives commented out
+- `Matter-Humidifier/REDUNDANCIES.md`, `docs/DEVLOG.md`, `docs/WIRING-UPDATE.md`, `CLAUDE.md`
+
+---
+
+### 2026-06-06 — LIGHT button detection saga (full arc)
+
+This session was entirely focused on trying to detect physical presses of the LIGHT (S2) panel button so that Apple Home reflects presses made directly on the device. The saga covers five distinct approaches and ends with a fundamental electrical conclusion.
+
+**Goal:** When someone presses S2 LIGHT on the humidifier panel, flip `lampIsOn` and call `lightEndpoint.update()` so Apple Home stays in sync.
+
+**Approach 1: Negedge ISR on L1 (initial, after voltage divider)**
+
+L1 carries the LIGHT button line. The panel has an internal pull-up to ~5 V; button press shorts to GND. After the 100 kΩ/100 kΩ divider, expected idle ~2.5 V, pressed ~0 V → clean negedge.
+
+Result: ISR fired continuously even at idle. Scope showed L1 had strong ~100 Hz / 0.4 V spikes superimposed on idle voltage. The panel's internal active pull-down (~1 kΩ) was dominating — the panel always drives L1 actively, so the divider idled far closer to 0 than expected. The spikes alone were enough to cross the negedge threshold repeatedly.
+
+**Approach 2: Polling with sliding window**
+
+Replaced ISR with a polling loop that measured GPIO level 40 times per 200 ms tick and classified a "press" only if ≥ 50% of samples were HIGH. Rationale: if pressed = LOW and idle = HIGH, the distribution should differ.
+
+Result: L1 measured mostly LOW in both idle AND pressed states (the panel's active pull-down dominates in both conditions). The rare HIGH samples were noise crossings from the 100 Hz EMI. No reliable discrimination. Abandoned.
+
+**Approach 3: Remove voltage divider; direct connection with internal pull-up**
+
+Bypassed the divider. Enabled ESP32-C6 internal pull-up (~45 kΩ). With the panel's ~1 kΩ active pull-down now fighting a 45 kΩ pull-up, idle voltage ≈ 1 kΩ/(45kΩ+1kΩ) × 3.3 V ≈ 0.07 V — nowhere near HIGH. ISR trigger impossible.
+
+Result: `LIGHT button press detected` fired in a continuous loop immediately. The internal pull-up was too weak to pull L1 anywhere near the HIGH threshold against the panel's 1 kΩ pull-down.
+
+**Approach 4: External 1 kΩ pull-up to 3.3 V; internal pull-up disabled; ISR reinstated**
+
+External 1 kΩ pull-up from L1 to XIAO 3.3 V rail. This creates a voltage divider with the panel's ~1 kΩ internal pull-down:
+
+- Idle: 1 kΩ ext / (1 kΩ ext + 1 kΩ panel) × 3.3 V ≈ 1.65 V
+- Pressed: button adds ~6 kΩ parallel path → effective panel impedance ≈ 0.857 kΩ → voltage ≈ 1.53 V
+
+Both states sit right at the ESP32-C6 Schmitt trigger threshold (~1.4 V typ). The 120 mV differential is not enough for reliable discrimination. ISR still fired spuriously, and probing with a DMM in AUTO mode triggered additional false presses (meter's own probe capacitance was enough to cross the threshold).
+
+**Root-cause measurement:**
+
+User measured L1 resistance:
+- Idle: ~1 kΩ to GND (the panel's active pull-down)
+- Pressed: ~0.86 kΩ to GND (button adds ~6 kΩ parallel path → 1 kΩ || 6 kΩ ≈ 0.86 kΩ)
+
+The button itself is not a short to GND — it adds a ~6 kΩ resistive path in parallel with the panel's existing ~1 kΩ pull-down. Net resistance change is only 14%. There is no operating point where L1 is unambiguously HIGH at idle and LOW when pressed.
+
+**Conclusion**
+
+L1 detection with a digital GPIO is fundamentally unreliable on this hardware without additional external components. Options considered:
+
+- **(A)** Tap the lamp drive line inside the unit (LED cathode or transistor collector) — would give a clean digital signal, but requires opening the unit and probing the green PCB, which is more invasive than originally scoped.
+- **(B)** Use ADC sampling on L1 with statistical thresholding — marginal; 120 mV difference over a noisy rail is unlikely to be reliable long-term.
+- **(C)** Accept one-way control (Home → device only; physical presses don't sync to Home).
+
+**Decision: accept one-way control (option C) and move on.**
+
+Physical presses of S2 LIGHT will not be detected or reflected in Apple Home. Apple Home → lampButton MOSFET shunt → humidifier works correctly and remains the primary control path. The L1 ISR code is still registered in firmware but fires spuriously — a final cleanup (comment out `setup_lamp_button_listen_gpio` call) was left as a pending task (see "Known Issues / Pending Work" below).
+
+**Scope / EMI note for the record**
+
+The ~100 Hz / 0.4 V spikes on L1 correlate with the panel's own LED scan rate. The panel cycles its LED matrix at ~100 Hz to time-multiplex the LEDs; each scan pulse capacitively couples into L1 through parasitic paths on the green PCB. This is why the spikes persist even with no button press and why turning MIST on (more LEDs active) increases the spike rate and amplitude. An optocoupler or a dedicated comparator with hysteresis (e.g., LM393 with a reference between 1.53 V and 1.65 V) could discriminate L1 reliably, but neither is in the current parts inventory.
+
+---
+
+### 2026-06-09 — Session wrap-up; machine migration prep
+
+**Current firmware state (as of this entry)**
+
+Active configuration in `main/Main.swift`:
+- `mistEndpoint` = `Matter.OnOffLight` — MIST on/off control (OnOff cluster, device type 0x0100)
+- `lightEndpoint` = `Matter.OnOffLight` — LIGHT/lamp on/off control
+- Both render as round light icons in Apple Home
+- MIST state is read back from panel-LED sensing (L2/L3/L4 ADC+digital) and synced to `mistEndpoint` every ~200 ms
+- LIGHT presses on the physical panel do NOT sync to Apple Home (one-way control — see LIGHT button saga above)
+- `setup_lamp_button_listen_gpio(lightButtonInputGPIO)` is still called in `main()` and will fire spuriously — pending comment-out
+
+MIST hardware state cycle: Off(0) → On(1) → 1H(2) → 3H(3) → 6H(4) → Off(0)
+
+**Known issues / pending work**
+
+1. **LIGHT ISR spurious fires:** `setup_lamp_button_listen_gpio(lightButtonInputGPIO)` at `Main.swift:53` should be commented out. With the 1 kΩ external pull-up, L1 idles at ~1.65 V (at Schmitt threshold) and will trigger negedge ISRs from ambient noise. Since LIGHT detection is accepted as one-way, there is no benefit to registering the ISR. Remove the call on the next code change.
+
+2. **`mistIsOn` drift vs actual hardware state:** `mistIsOn` is a bool tracking whether the mist is "on" for the OnOffLight cluster. `hwState` tracks the 5-state hardware position (0–4). After physical button presses cycle through On/1H/3H/6H and back to Off, the two can get out of sync because `mistIsOn` is updated whenever `hwState` transitions between 0 and non-0, but the OnOff cluster only has two values. Currently acceptable for the kludge endpoint — if the ModeSelectDevice or AirPurifier endpoint is ever activated, this drift disappears.
+
+3. **Self-press suppression for MIST:** When Apple Home calls `fanButton.press()` via `mistEndpoint.eventHandler`, the MOSFET on D2/GPIO2 briefly pulls the S1 line LOW. This capacitively couples into L2 (the MIST row ADC line on D1/GPIO1), which can spike the ADC reading and register a spurious state change in `matter_read_mist_state()`. A `fanPressesPending` counter that suppresses one state-change report after each Home-initiated press was proposed but never implemented.
+
+4. **Boot-time false MIST read:** On occasional boots, `matter_read_mist_state()` returns 1 on the first few polls even when the humidifier is off. Likely caused by the panel's boot sequence briefly lighting LEDs. The 2-read debounce prevents this from propagating to Matter, but the first read still sets `pendingMistState = 1` until the device stabilizes. Minor; acceptable.
+
+5. **Duplicate `return` in `create_humidifier_fan_endpoint()`:** `MatterInterface.cpp:49` has an unreachable second `return esp_matter::endpoint::fan::create(...)`. Pre-existing bug; the function returns on line 48 so line 49 is never reached. Remove on next touch.
+
+**Machine migration checklist**
+
+To resume development on a new machine:
+
+1. **Clone the repo:**
+   ```
+   git clone <repo-url> iot-projects
+   cd iot-projects
+   ```
+
+2. **Install ESP-IDF v5.4.1:**
+   - Follow Espressif's standard installer for macOS. Target version: `v5.4.1`.
+   - After install, add an alias to `~/.zshrc`:
+     ```
+     alias get_esp541='. <ESP_IDF_PATH>/export.sh && . <ESP_MATTER_PATH>/export.sh'
+     ```
+
+3. **Install esp-matter release/v1.4:**
+   - Clone `esp-matter` at tag/branch `release/v1.4`.
+   - Run `install.sh`.
+   - Initialize submodules with `--platform esp32 darwin --shallow` (full submodule checkout is very large).
+   - Set `ESP_MATTER_PATH` in shell config.
+
+4. **Install nightly Swift trunk toolchain:**
+   - Download from https://www.swift.org/download → "Trunk Development (main) snapshot"
+   - Install to `/Library/Developer/Toolchains/`
+   - Verify: `plutil -extract CFBundleIdentifier raw /Library/Developer/Toolchains/swift-latest.xctoolchain/Info.plist`
+   - The toolchain identifier must be exported as `TOOLCHAINS` before building.
+
+5. **Build:**
+   ```bash
+   # Fresh terminal every time
+   get_esp541
+   cd iot-projects/Matter-Humidifier
+   export TOOLCHAINS=$(plutil -extract CFBundleIdentifier raw /Library/Developer/Toolchains/swift-latest.xctoolchain/Info.plist)
+   idf.py set-target esp32c6
+   idf.py build
+   ```
+
+6. **Flash and monitor:**
+   ```bash
+   idf.py erase-flash flash monitor
+   ```
+
+7. **Wiring:** reproduce the breadboard from `docs/WIRING-UPDATE.md`. Key checklist:
+   - L5 (panel GND) → XIAO GND — **mandatory before powering on**
+   - L2 → 100kΩ/100kΩ divider → D1/GPIO1 (ADC)
+   - L3 → 100kΩ/100kΩ divider → D10/GPIO18
+   - L4 → 100kΩ/100kΩ divider → D5/GPIO23
+   - L1 → external 1kΩ pull-up to 3.3V → D7/GPIO17 (ISR input, currently unreliable — see LIGHT button saga)
+   - MIST MOSFET: D2/GPIO2 → gate; drain/source across S1 contacts
+   - LIGHT MOSFET: D0/GPIO0 → gate; drain/source across S2 contacts
+
+8. **Commissioning:**
+   - Erase flash before first commission (`idf.py erase-flash`).
+   - Keep iPhone within ~1 m of XIAO during BLE pairing.
+   - Passcode: `20202021`.
+   - If pairing stalls silently after the device transmits its DAC certificate, **unplug the HomePod mini / Apple TV 4K for ~2 minutes**, let it re-establish, then retry — the Hub caches attestation rejections.
+
+9. **Verify:**
+   - Apple Home shows two round light icons (MIST and LIGHT).
+   - Toggling MIST tile on/off causes MOSFET shunt to pulse; humidifier LED changes state.
+   - Toggling LIGHT tile causes LIGHT MOSFET to pulse; humidifier lamp changes state.
+   - Physical MIST button presses on the panel are reflected in Home within ~400 ms.
+   - Physical LIGHT button presses are NOT reflected in Home (one-way control — expected).

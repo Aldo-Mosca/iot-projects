@@ -81,7 +81,6 @@ extension Matter {
 
     enum Attribute {
       case onOff
-      // case levelControl
       case colorControl(ColorControlAttribute)
       case fanMode
       case percentSetting
@@ -94,13 +93,6 @@ extension Matter {
           case OnOff.AttributeID<OnOff.OnOffState>.state.rawValue: self = .onOff
           default: return nil
           }
-        // } else if cluster.as(LevelControl.self) != nil {
-        //   switch attribute {
-        //   case LevelControl.AttributeID<LevelControl.CurrentLevel>.currentLevel
-        //     .rawValue:
-        //     self = .levelControl
-        //   default: return nil
-        //   }
         } else if cluster.as(ColorControl.self) != nil {
           switch attribute {
           case ColorControl.AttributeID<ColorControl.CurrentHue>.currentHue
@@ -175,9 +167,6 @@ extension Matter {
     func updateFanMode(_ mode: UInt8) {
       matter_fan_update_mode(UInt16(id), mode)
     }
-    // func updateFanSpeed(_ speed: UInt8) {
-    //   matter_fan_update_mode(UInt16(id), mode)
-    // }
   }
 }
 
@@ -266,7 +255,6 @@ extension Matter {
 func print(_ a: Matter.Endpoint.Attribute) {
   switch a {
   case .onOff: print("onOff")
-  // case .levelControl: print("levelControl")
   case .colorControl(let a):
     print("colorControl(", terminator: "")
     switch a {

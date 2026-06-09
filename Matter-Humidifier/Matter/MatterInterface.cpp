@@ -222,12 +222,10 @@ esp_matter::endpoint_t *create_humidifier_switch_endpoint(
   return endpoint;
 }
 
-// ---- ISR latches (one per physical button) ----
+// ---- ISR latch for LIGHT button ----
 
-static volatile bool s_fan_button_pressed  = false;
 static volatile bool s_lamp_button_pressed = false;
 
-static void IRAM_ATTR fan_button_isr_handler(void *)  { s_fan_button_pressed  = true; }
 static void IRAM_ATTR lamp_button_isr_handler(void *) { s_lamp_button_pressed = true; }
 
 extern "C" {
@@ -237,9 +235,6 @@ void delay_ms(uint32_t ms) {
 }
 
 esp_err_t matter_fan_update_mode(uint16_t endpoint_id, uint8_t fan_mode) {
-  // Update FanMode (0x0000). 
-  // esp_matter_attr_val_t val = esp_matter_uint8(fan_mode);
-  // return esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000000, &val);
   // Update FanMode (0x0000)
   esp_matter_attr_val_t val = esp_matter_uint8(fan_mode);
   esp_err_t err = esp_matter::attribute::update(endpoint_id, 0x00000202, 0x00000000, &val);
@@ -274,26 +269,6 @@ esp_err_t matter_switch_press(uint16_t endpoint_id) {
   esp_matter::attribute::update(endpoint_id, 0x0000003B, 0x00000001, &one);
   chip::app::Clusters::SwitchServer::Instance().OnInitialPress(endpoint_id, 1);
   return esp_matter::attribute::update(endpoint_id, 0x0000003B, 0x00000001, &zero);
-}
-
-void setup_fan_button_listen_gpio(int32_t gpio_num) {
-  gpio_config_t cfg = {};
-  cfg.pin_bit_mask = 1ULL << gpio_num;
-  cfg.mode = GPIO_MODE_INPUT;
-  cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-  cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-  cfg.intr_type = GPIO_INTR_NEGEDGE;
-  gpio_config(&cfg);
-  gpio_install_isr_service(0);  // installs the service; call this before setup_lamp_button_listen_gpio
-  gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), fan_button_isr_handler, nullptr);
-}
-
-bool matter_fan_button_was_pressed(void) {
-  if (s_fan_button_pressed) {
-    s_fan_button_pressed = false;
-    return true;
-  }
-  return false;
 }
 
 // ===== LIGHT button edge detection =====
