@@ -17,7 +17,7 @@ iot-projects/
 Adding Matter smart home capabilities to a room humidifier using a Seeed XIAO ESP32-C6. The ESP32-C6's native Thread (802.15.4) support makes it a natural fit for Matter-over-Thread with Apple Home.
 
 See [`docs/matter-humidifier-devlog.md`](docs/matter-humidifier-devlog.md) for the full development log.
-Also, check out the [`demo video`](docs/matter-humidifier-demo.mp4)
+Also, check out the [`photo and video gallery`](docs/gallery)
 
 ### Swift Matter Smart Light
 
