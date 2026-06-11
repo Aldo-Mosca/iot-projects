@@ -222,13 +222,70 @@ esp_matter::endpoint_t *create_humidifier_switch_endpoint(
   return endpoint;
 }
 
-// ---- ISR latch for LIGHT button ----
+// ===== GPIO signal scanner (startup diagnostic) =====
+// Scans candidate GPIOs for the 100 Hz / 33 µs S2 signal. Logs HIGHs per
+// GPIO so we can identify which physical pin the divider output landed on.
 
-static volatile bool s_lamp_button_pressed = false;
+void matter_gpio_scan_for_signal(void) {
+  static const int kCandidates[] = {3,4,5,6,7,8,9,10,11,14,15,16,17,19,20,21,22};
+  ESP_LOGI("[HUMI]", "GPIO signal scan starting (skipping 0,1,2,18,23)...");
+  for (int ci = 0; ci < (int)(sizeof(kCandidates)/sizeof(kCandidates[0])); ci++) {
+    int g = kCandidates[ci];
+    gpio_config_t cfg = {};
+    cfg.pin_bit_mask = 1ULL << g;
+    cfg.mode         = GPIO_MODE_INPUT;
+    cfg.pull_up_en   = GPIO_PULLUP_DISABLE;
+    cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    cfg.intr_type    = GPIO_INTR_DISABLE;
+    gpio_config(&cfg);
+    int highs = 0;
+    for (int i = 0; i < 200000; i++) {
+      if (gpio_get_level(static_cast<gpio_num_t>(g))) highs++;
+    }
+    ESP_LOGI("[HUMI]", "  GPIO%02d: %d/200000 HIGHs", g, highs);
+  }
+  ESP_LOGI("[HUMI]", "GPIO signal scan done. Expect ~600 HIGHs on the live pin.");
+}
 
-static void IRAM_ATTR lamp_button_isr_handler(void *) { s_lamp_button_pressed = true; }
+// ===== S2 (LIGHT) scan-line pulse detection =====
+// The humidifier MCU emits 100 Hz / ~33 µs rising pulses on the S2 line during
+// idle. A physical S2 press suppresses the pulses entirely (line held LOW).
+// Detection: rising-edge ISR stores the tick of each pulse; the main loop checks
+// how long ago the last pulse arrived — > 50 ms means the button is pressed.
+
+static volatile uint32_t s_lamp_pulse_count = 0;
+
+static void IRAM_ATTR lamp_listen_isr_handler(void *) {
+  s_lamp_pulse_count++;
+}
 
 extern "C" {
+
+void setup_lamp_listen_gpio(int32_t gpio_num) {
+  // Install ISR service first — before any interrupt is enabled — so no edge
+  // can fire into an unregistered handler and latch the status register.
+  gpio_install_isr_service(0);  // idempotent if already installed
+
+  // Configure pin as plain input with interrupt disabled for now.
+  gpio_config_t cfg = {};
+  cfg.pin_bit_mask   = 1ULL << gpio_num;
+  cfg.mode           = GPIO_MODE_INPUT;
+  cfg.pull_up_en     = GPIO_PULLUP_DISABLE;
+  cfg.pull_down_en   = GPIO_PULLDOWN_DISABLE;
+  cfg.intr_type      = GPIO_INTR_DISABLE;
+  gpio_config(&cfg);
+
+  // Register handler, then enable edge detection — handler is ready before
+  // any edge can fire.
+  esp_err_t err = gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), lamp_listen_isr_handler, nullptr);
+  if (err != ESP_OK) ESP_LOGE("[HUMI]", "gpio_isr_handler_add failed: %d", err);
+  gpio_set_intr_type(static_cast<gpio_num_t>(gpio_num), GPIO_INTR_ANYEDGE);
+  gpio_intr_enable(static_cast<gpio_num_t>(gpio_num));
+}
+
+uint32_t matter_lamp_pulse_count(void) {
+  return s_lamp_pulse_count;
+}
 
 void delay_ms(uint32_t ms) {
   vTaskDelay(pdMS_TO_TICKS(ms));
@@ -271,37 +328,6 @@ esp_err_t matter_switch_press(uint16_t endpoint_id) {
   return esp_matter::attribute::update(endpoint_id, 0x0000003B, 0x00000001, &zero);
 }
 
-// ===== LIGHT button edge detection =====
-// L1 carries the LIGHT button line. With an external 1 kΩ pull-up from L1 to
-// 3V3 dominating the panel's internal pull-down (~10 kΩ), the line sits at
-// ~3 V at idle and drops to ~0 V when the button shorts L1 to GND. That gives
-// a clean HIGH→LOW edge per press, which the negedge ISR catches directly.
-
-void setup_lamp_button_listen_gpio(int32_t gpio_num) {
-  gpio_config_t cfg = {};
-  cfg.pin_bit_mask = 1ULL << gpio_num;
-  cfg.mode = GPIO_MODE_INPUT;
-  // Internal pull-up DISABLED — the external 1 kΩ pull-up establishes the
-  // idle HIGH. Enabling the internal ~45 kΩ pull-up here would just add a
-  // parallel current path; harmless but pointless.
-  cfg.pull_up_en = GPIO_PULLUP_DISABLE;
-  cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-  cfg.intr_type = GPIO_INTR_NEGEDGE;
-  gpio_config(&cfg);
-  // Install ISR service if not already done. Returns ESP_ERR_INVALID_STATE
-  // if a previous setup_*_listen_gpio() call installed it; ignore that.
-  gpio_install_isr_service(0);
-  gpio_isr_handler_add(static_cast<gpio_num_t>(gpio_num), lamp_button_isr_handler, nullptr);
-}
-
-bool matter_lamp_button_was_pressed(void) {
-  if (s_lamp_button_pressed) {
-    s_lamp_button_pressed = false;
-    return true;
-  }
-  return false;
-}
-
 // ===== MIST panel LED sensing =====
 // Replaces the K2 listen-ISR approach (which was unreliable on the new green
 // board). Polls three panel-cable lines on each main-loop tick:
@@ -324,7 +350,7 @@ void setup_mist_panel_sensors(int32_t row_gpio, int32_t col_a_gpio, int32_t col_
   // routed out on the XIAO ESP32-C6 — and D0/D2 are spoken for by the button
   // shunts, leaving D1 (GPIO1) as the only viable ADC pin.
   if (row_gpio < 0 || row_gpio > 6) {
-    ESP_LOGE("HUMI", "MIST row GPIO %d is not ADC1-capable on ESP32-C6", (int)row_gpio);
+    ESP_LOGE("[HUMI]", "MIST row GPIO %d is not ADC1-capable on ESP32-C6", (int)row_gpio);
     return;
   }
   s_mist_row_channel = static_cast<adc_channel_t>(row_gpio);
@@ -333,7 +359,7 @@ void setup_mist_panel_sensors(int32_t row_gpio, int32_t col_a_gpio, int32_t col_
   init_cfg.unit_id = ADC_UNIT_1;
   init_cfg.ulp_mode = ADC_ULP_MODE_DISABLE;
   if (adc_oneshot_new_unit(&init_cfg, &s_mist_adc_handle) != ESP_OK) {
-    ESP_LOGE("HUMI", "adc_oneshot_new_unit failed");
+    ESP_LOGE("[HUMI]", "adc_oneshot_new_unit failed");
     s_mist_adc_handle = nullptr;
     return;
   }
@@ -351,7 +377,7 @@ void setup_mist_panel_sensors(int32_t row_gpio, int32_t col_a_gpio, int32_t col_
   cali_cfg.atten = ADC_ATTEN_DB_12;
   cali_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
   if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_mist_adc_cali_handle) != ESP_OK) {
-    ESP_LOGW("HUMI", "ADC calibration unavailable, will use raw ADC counts");
+    ESP_LOGW("[HUMI]", "ADC calibration unavailable, will use raw ADC counts");
     s_mist_adc_cali_handle = nullptr;
   }
 

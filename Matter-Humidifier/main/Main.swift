@@ -6,14 +6,13 @@ func main() {
   setup_mist_panel_sensors(mistRowGPIO, mistColAGPIO, mistColBGPIO)
 
   let lampButton = ButtonShunt(gpio: lampButtonGPIO)
-  // LIGHT button is still edge-detected via the panel cable's L1 line.
-  // Repurposes the existing setup_lamp_button_listen_gpio shim with the new
-  // input pin (D3/GPIO21, was the K2 listen wire).
-  setup_lamp_button_listen_gpio(lightButtonInputGPIO)
+  setup_lamp_listen_gpio(lampListenGPIO)
 
   // Assumed hardware states on boot.
   var hwState: UInt8 = 0   // fan: Off
   var lampIsOn: Bool = false
+  var lampPhysicalPressActive = false
+  var suppressLampDetectTicks: Int = 0
 
   // (1) Create a Matter root node
   let rootNode = Matter.Node()
@@ -21,7 +20,7 @@ func main() {
 
 
 
-  // (2.5) Create an OnOff Light endpoint for the lamp (K1 button)
+  // (2.5) Create an OnOff Light endpoint for the lamp (S2 button)
   let lightEndpoint = Matter.OnOffLight(node: rootNode)
   lightEndpoint.eventHandler = { event in
     guard case .onOff = event.attribute else { return }
@@ -29,6 +28,7 @@ func main() {
     if targetOn != lampIsOn {
       lampButton.press()
       lampIsOn = targetOn
+      suppressLampDetectTicks = 4   // 4 × 200 ms = 800 ms suppression
     }
   }
 
@@ -59,6 +59,7 @@ func main() {
   var pendingMistState: UInt8 = 0
   var pendingMistCount: Int = 0
   let kMistDebounceCount = 2      // consecutive identical reads required (≈ 400 ms at 200 ms tick)
+  var lastLampPulseCount: UInt32 = matter_lamp_pulse_count()
   while true {
     // MIST: state-based sensing from the panel-LED encoding. Each iteration
     // reads the current hardware mode (Off/On/1H/3H/6H) and only reports a
@@ -84,12 +85,24 @@ func main() {
       lastMistState = pendingMistState
     }
 
-    // LIGHT: still edge-detected (no LED feedback on the panel for this button).
-    if matter_lamp_button_was_pressed() {
-      print("[HUMI] 💡 LIGHT button press detected")
-      lampIsOn = !lampIsOn
-      lightEndpoint.update(lampIsOn)
+    // LIGHT: pulse-absence detection on the S2 scan line (GPIO19).
+    // The humidifier MCU pulses S2 at 100 Hz; a physical press suppresses them.
+    let currentLampPulseCount = matter_lamp_pulse_count()
+    // print("[HUMI] 🔦 lamp count=\(currentLampPulseCount) last=\(lastLampPulseCount) active=\(lampPhysicalPressActive)")
+    if suppressLampDetectTicks > 0 {
+      suppressLampDetectTicks -= 1
+    } else {
+      let pulsesAbsent = (currentLampPulseCount == lastLampPulseCount)
+      if pulsesAbsent && !lampPhysicalPressActive {
+        lampPhysicalPressActive = true
+      } else if !pulsesAbsent && lampPhysicalPressActive {
+        lampPhysicalPressActive = false
+        print("[HUMI] 💡 S2 physical press detected")
+        lampIsOn = !lampIsOn
+        lightEndpoint.update(lampIsOn)
+      }
     }
+    lastLampPulseCount = currentLampPulseCount
     delay_ms(200)
   }
 }

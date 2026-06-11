@@ -28,6 +28,14 @@ let fanButtonGPIO: Int32 = 2
 // XIAO ESP32-C6: D7 = GPIO17. (GPIO17 is the chip's default UART0 RX, but the
 // XIAO uses USB-Serial-JTAG for `idf.py monitor`, so this is harmless.)
 let lightButtonInputGPIO: Int32 = 17
+// L1 — kept as a constant for reference; the old negedge-ISR approach on this
+// pin was unreliable (panel's active pull-down makes idle/pressed indistinguishable).
+// Active S2 detection now uses lampListenGPIO below.
+
+// D8/GPIO19 — S2 scan-line input. The humidifier MCU emits 100 Hz / 33 µs pulses
+// on this line during idle; a physical S2 press suppresses them. Voltage divider
+// (10 kΩ series + 15 kΩ to GND) scales 4.6 V pulses to ~2.76 V (safe for GPIO).
+let lampListenGPIO: Int32 = 19
 
 // L2 — MIST mode row selector. Three discrete voltage levels on the panel cable:
 //   ~0.0 V  → device off (state 0)

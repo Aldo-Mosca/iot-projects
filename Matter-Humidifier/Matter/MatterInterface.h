@@ -82,12 +82,19 @@ esp_err_t matter_mode_select_update_current_mode(uint16_t endpoint_id, uint8_t m
 esp_err_t matter_switch_press(uint16_t endpoint_id);
 
 // Configure a GPIO as input with a falling-edge interrupt to detect physical K1 (lamp) presses.
-// Installs the GPIO ISR service if not already done.
-void setup_lamp_button_listen_gpio(int32_t gpio_num);
+// Configure GPIO gpio_num as a rising-edge ISR input to detect the 100 Hz scan
+// pulses the humidifier MCU emits on the S2 line. Absence of pulses for > 50 ms
+// indicates a physical S2 press. Call once at startup; installs ISR service if
+// not already done.
+void setup_lamp_listen_gpio(int32_t gpio_num);
 
-// Returns true (and clears the latch) if a physical K1 (lamp) press was detected since last call.
-// Still used for the LIGHT (S2) panel button.
-bool matter_lamp_button_was_pressed(void);
+// Scans candidate GPIOs for the 100 Hz S2 signal and logs results.
+// Call once at startup before setup_lamp_listen_gpio().
+void matter_gpio_scan_for_signal(void);
+
+// Returns the cumulative count of edges seen on the S2 scan line since boot.
+// A press is detected when this count stops incrementing between main-loop ticks.
+uint32_t matter_lamp_pulse_count(void);
 
 // ===== Panel-LED sensing for MIST state (replaces K2 button listen) =====
 

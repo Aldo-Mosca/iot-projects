@@ -1,6 +1,6 @@
 # WIRING UPDATE — Panel-LED Sensing for MIST State
 
-**Date:** 2026-06-02
+**Date:** 2026-06-02 (updated 2026-06-10 — S2 pulse-absence LIGHT detection; D8/GPIO19 pin assignment; UART-pin mapping corrections)
 **Hardware:** Seeed Studio XIAO ESP32-C6 + new humidifier model (2 buttons, 4 mode LEDs, JST PH002 7-pin panel cable)
 
 This document captures the **new** wiring after switching MIST-state detection from the K1/K2 button-listen-ISR approach to direct panel-LED state sensing. The old approach proved unreliable on the new control board (noise-driven spurious ISRs, no clean physical-button line on the cable).
@@ -12,7 +12,7 @@ This document captures the **new** wiring after switching MIST-state detection f
 | Function | Before | After |
 |---|---|---|
 | MIST state sync (device → Matter) | Listen-ISR on S1 line — noisy, dropped events, false triggers | Poll 3 panel-LED encoding lines (L2/L3/L4) every main-loop tick |
-| LIGHT press detect (device → Matter) | Listen-ISR on S2 line — noisy | Negedge ISR on the L1 panel-cable line — clean direct-from-button signal |
+| LIGHT press detect (device → Matter) | Listen-ISR on S2 line — noisy | Negedge ISR on L1 (unreliable — see 2026-06-10 update) → replaced by **pulse-absence detection** on the humidifier MCU S2 scan line (D8/GPIO19): ANYEDGE ISR counts 100 Hz pulses; no count change over 200 ms means button is held |
 | MIST shunt (Matter → device) | MOSFET on K2 | **Unchanged** — same MOSFET on K2 |
 | LIGHT shunt (Matter → device) | MOSFET on K1 | **Unchanged** — same MOSFET on K1 |
 | ESP power | USB-C from laptop | Optionally from panel cable L6 (5 V) once verified |
@@ -54,16 +54,21 @@ Long-press (1+ second) on either panel button turns the whole device off (mist �
 
 On the Seeed XIAO ESP32-C6, **the silkscreen D-numbers do NOT generally map 1:1 to GPIO numbers**. Only D0/D1/D2 happen to match (D0=GPIO0, etc.); from D3 onwards the mapping is non-obvious and must be looked up in Seeed's datasheet. Confirmed from the datasheet:
 
-| Silkscreen | GPIO | ADC1 channel routed? |
-|---|---|---|
-| D0 | 0 | yes (CH0) |
-| D1 | 1 | yes (CH1) |
-| D2 | 2 | yes (CH2) |
-| D5 | 23 | no |
-| D7 | 17 | no |
-| D10 | 18 | no |
+| Silkscreen | GPIO | ADC1 channel routed? | Notes |
+|---|---|---|---|
+| D0 | 0 | yes (CH0) | |
+| D1 | 1 | yes (CH1) | |
+| D2 | 2 | yes (CH2) | |
+| D5 | 23 | no | |
+| D6 | 6 | no | **UART0 TX** (console/debug output) — UART peripheral owns the IO MUX; GPIO ISR cannot receive external signals here |
+| D7 | 16 | no | **UART secondary TX** — same caveat as D6; GPIO edge interrupts won't fire reliably |
+| D8 | 19 | no | General I/O safe; currently used for S2 scan-line pulse detection (`lampListenGPIO`) |
+| D9 | 20 | no | General I/O safe |
+| D10 | 18 | no | |
 
 Although ADC1 has channels 0–6 at the chip level (GPIO0–GPIO6), **only D0/D1/D2 are routed out as ADC pins on the XIAO board** — the other channels' underlying GPIOs (GPIO3–GPIO6) aren't exposed on the silkscreen as analog inputs.
+
+**UART-claimed pins (D6/D7):** `gpio_get_level` on GPIO6 or GPIO16 returns 0 regardless of external signal level, and GPIO edge ISRs on these pins don't fire, because the UART peripheral holds the IO MUX ownership. Confirmed by direct experiment: routing the S2 wire to D6 or D7 produced 0/200000 HIGHs in a polling scan even when the oscilloscope showed live 100 Hz signal.
 
 **Pin-safety guidance from the Seeed forum** ([Technical Reference Manual vs the datasheet](https://forum.seeedstudio.com/t/technical-reference-manual-vs-the-datasheet/292511/3)):
 
@@ -77,13 +82,15 @@ Although ADC1 has channels 0–6 at the chip level (GPIO0–GPIO6), **only D0/D1
 | LIGHT button shunt (existing) | **D0** | 0 | OUTPUT | LIGHT MOSFET gate |
 | MIST button shunt (existing) | **D2** | 2 | OUTPUT | MIST MOSFET gate |
 | **L2** MIST row sensor (ADC) | **D1** | 1 | INPUT (ADC1_CH1) | L2 via 100 k / 100 k divider |
-| **L1** LIGHT button sensor | **D7** | 17 | INPUT (negedge ISR) | L1 via external 1 kΩ pull-up to 3.3 V (see note) |
+| **S2 scan-line** LIGHT press detect | **D8** | 19 | INPUT (ANYEDGE ISR) | S2 humidifier MCU scan line via 10 kΩ / 15 kΩ divider (see note) |
 | **L3** MIST col A sensor | **D10** | 18 | INPUT (digital) | L3 via 100 k / 100 k divider |
 | **L4** MIST col B sensor | **D5** | 23 | INPUT (digital) | L4 via 100 k / 100 k divider |
 | Common ground | **GND** | — | — | L5 |
 | Power in (optional) | **5V** | — | power in | L6 |
 
-**Note on D7 = GPIO17:** GPIO17 is the ESP32-C6 chip's default UART0 RX pin. On the XIAO this doesn't matter — `idf.py monitor` uses USB-Serial-JTAG (GPIO12/13) rather than UART0 — but if you ever see weird serial behavior, that's where to look first.
+**Note on D8 = GPIO19 (S2 scan-line):** The humidifier MCU emits 100 Hz / ~33 µs rising pulses on the S2 scan line during idle. Physical button press suppresses the pulses entirely (line held LOW). The XIAO registers this via an ANYEDGE ISR (`lamp_listen_isr_handler`) that increments a counter on every edge. The main loop samples the counter at 200 ms intervals; if the count has not changed, the button is considered pressed. Voltage divider (10 kΩ series + 15 kΩ to GND) scales the 4.6 V panel pulses to ~2.76 V — safely within the ESP32-C6 3.6 V GPIO absolute maximum.
+
+**Note on D7 = GPIO16:** Previously listed (incorrectly) as GPIO17 and trialled as the S2 input. GPIO16 is a UART-claimed pin — the UART peripheral holds the IO MUX and blocks GPIO edge detection. Confirmed by oscilloscope (live 100 Hz signal visible) versus GPIO scan (0/200000 HIGHs). Do not use D6 or D7 for external edge-interrupt inputs.
 
 ---
 
@@ -107,13 +114,25 @@ Panel pin (L1, L2, L3, or L4)
 - **Presents 200 kΩ load** to the panel — invisible to the panel's driver circuit.
 - **Optional 100 nF cap to GND** at the ESP input filters HF noise. Forms ~10 µs RC time constant with the 100 kΩ source impedance — invisible to all our signal timing but kills RFI pickup.
 
-### L2 sees the ADC; L3/L4 see digital GPIOs; L1 uses an external pull-up
+### L2 sees the ADC; L3/L4 see digital GPIOs; S2 scan line uses a different divider
 
-The same divider topology works for L2, L3, and L4. L1 is different:
+The same 100 kΩ / 100 kΩ divider topology works for L2, L3, and L4. The S2 scan-line input is different:
 
 - **L2 → ADC1 channel 1** (D1/GPIO1). Configured with **12 dB attenuation** (~0…3.3 V usable range) and curve-fitting calibration. The firmware reads in millivolts and thresholds at 200 mV (off) and 1300 mV (which mode pair).
 - **L3, L4 → digital GPIO**. After the divider, 0.15 V (LED active) and 2.25 V (LED inactive) are unambiguously below / above the GPIO digital threshold (~1.4 V on 3.3 V logic).
-- **L1 → D7/GPIO17 — external 1 kΩ pull-up, no voltage divider.** The panel drives L1 with an active ~1 kΩ pull-down at all times (both idle and pressed), making the 100 kΩ/100 kΩ divider useless (idle output ≈ 0 V). An external 1 kΩ pull-up from L1 to XIAO 3.3 V brings idle voltage to ~1.65 V. When the button is pressed it adds ~6 kΩ parallel to the panel pull-down, shifting voltage to ~1.53 V — only 120 mV below idle. Both values sit at the ESP32-C6 Schmitt threshold, making reliable edge detection impossible. **LIGHT panel-press detection is one-way only (Home → device works; device → Home does not).** The ISR is registered in firmware but fires spuriously; the `setup_lamp_button_listen_gpio()` call in `main/Main.swift` should be commented out on the next code change.
+- **S2 scan line → D8/GPIO19 — 10 kΩ / 15 kΩ divider.** The S2 line carries 100 Hz / ~33 µs pulses at ~4.6 V. The lower-impedance divider (vs. 100 kΩ / 100 kΩ) ensures the short pulses are not rounded off by parasitic capacitance on the breadboard run. Circuit:
+
+```
+S2 humidifier scan line
+    |
+    +---[ 10 kΩ ]---+---[ 15 kΩ ]---  GND (L5 / XIAO GND, common)
+                    |
+                    +--- to D8 (GPIO19)
+```
+
+  Output voltage: 15 kΩ / (10 kΩ + 15 kΩ) × 4.6 V ≈ **2.76 V** — safely within the ESP32-C6 3.6 V GPIO absolute maximum.
+
+**Note on L1 (lightButtonInputGPIO / GPIO17):** The panel L1 line (LIGHT button, active LOW on press) was trialled as the LIGHT press detect source. The panel drives L1 with an active pull-down at all times, making the divided voltage ambiguous at the Schmitt threshold in both idle and pressed states. This approach was abandoned; L1 wiring can remain connected for voltage monitoring but is not used by the firmware for press detection.
 
 ---
 
@@ -151,7 +170,7 @@ After wiring, with the device powered on:
 
 1. **No physical interaction.** `idf.py monitor` should be quiet — no `[HUMI] 💧 mist state change` lines. If you see continuous state-change messages with no panel interaction, the dividers are off or the ground is bad. (Spurious `[HUMI] 💡 LIGHT button press detected` lines may appear even at idle due to the L1 Schmitt-threshold issue — this is a known limitation.)
 2. **Press MIST once.** Should see exactly one `[HUMI] 💧 mist state change 0 → 1` line (or whatever the new state is). Each subsequent press should produce exactly one change line.
-3. **Press LIGHT once.** Physical panel LIGHT presses are NOT reliably detected — see "L1 LIGHT button detection" note above. Skip this verification step.
+3. **Press LIGHT once.** Should see `[HUMI] 💡 S2 physical press detected` in the log and the light tile in Apple Home should toggle. The detection relies on the 100 Hz S2 scan-line pulses going absent during the button hold: if the lamp count debug print is temporarily re-enabled (`// print("[HUMI] 🔦 lamp count=...")`), you should see the counter incrementing between ticks at idle and frozen during a physical press.
 4. **Long-press either button (1+ s).** Device turns off. Should see `[HUMI] 💧 mist state change N → 0`.
 5. **From Apple Home: toggle the mist tile.** Within ~200 ms you should see the MOSFET pulse, the panel LED change, and the corresponding `mist state change` line confirm the state was sensed back.
 6. **From Apple Home: toggle the light tile.** The LIGHT MOSFET should pulse (D0/GPIO0) and the humidifier lamp should turn on or off.
@@ -162,10 +181,10 @@ After wiring, with the device powered on:
 
 The following constants and code paths are superseded but kept commented for reference:
 
-- `lampListenGPIO` (was on D1/GPIO1) → no longer used. The new `mistRowGPIO` lives on **D1/GPIO1** (same physical pin, repurposed from listen ISR to ADC input).
-- `fanListenGPIO` (was listed as GPIO21 — that was an error; XIAO D-to-GPIO mapping is not 1:1 past D2) → no longer used. The new `lightButtonInputGPIO` lives on **D7/GPIO17**.
+- `lampListenGPIO` (was on D1/GPIO1 in the very first wiring, then moved to D7/GPIO17 as a negedge ISR on L1) → now on **D8/GPIO19**, connected to the humidifier MCU's S2 scan line. Detection method changed from negedge ISR on the panel button line to pulse-absence counting on the MCU scan line (see "S2 scan-line" note above).
+- `fanListenGPIO` (was listed as GPIO21 — that was an error; XIAO D-to-GPIO mapping is not 1:1 past D2) → no longer used. The new `lightButtonInputGPIO` (L1 direct panel line) lives on GPIO17 but is not actively used for press detection.
 - `setup_fan_button_listen_gpio()` and `matter_fan_button_was_pressed()` are still defined in `MatterInterface.cpp` but no longer called.
-- `setup_lamp_button_listen_gpio()` and `matter_lamp_button_was_pressed()` are still in use, now backing the LIGHT button input on its new GPIO. The function was made idempotent re: `gpio_install_isr_service()` so it can be called standalone.
+- `setup_lamp_listen_gpio()` now calls `gpio_install_isr_service()` **before** enabling the interrupt, then configures the pin with `GPIO_INTR_DISABLE`, registers the handler via `gpio_isr_handler_add()`, and only then enables ANYEDGE. The prior ordering (configure-with-interrupt first, then install service) caused unhandled edges during the startup window to latch the interrupt-status register and silently block all subsequent edge detection.
 - `Main.swift`'s main loop now polls `matter_read_mist_state()` per iteration and only reports state *changes* to Matter, instead of edge-detecting transient button events.
 
 If you ever want to roll back to the old listen-ISR approach (e.g., if hardware is revised again), the previous `setup_*_listen_gpio` calls are commented out in `Main.swift` and can be reinstated by uncommenting them and reverting the constants in `ButtonShunt.swift`.

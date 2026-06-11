@@ -264,6 +264,69 @@ Relevant git commits in esp-matter for `get_device_type_ids`:
 
 ---
 
+### 2026-06-10 — S2 pulse-absence detection: full debugging arc
+
+**Context**
+
+The previous session concluded that L1 (the LIGHT button line) is fundamentally unreliable for edge detection: the panel drives it with a ~1 kΩ active pull-down at all times, leaving only 120 mV of swing between idle and pressed — not enough for a GPIO Schmitt trigger. The session accepted one-way LIGHT control and moved on.
+
+This session revisited LIGHT detection using a completely different signal: the **S2 scan-line pulse train**. The humidifier MCU continuously emits 100 Hz / ~33 µs pulses on the S2 line during idle; a physical S2 press suppresses the pulses entirely (line held LOW). Detecting the *absence* of pulses rather than the press transition itself sidesteps the L1 threshold problem.
+
+**Architecture change: counter-based ISR replacing tick-based age tracking**
+
+The first implementation used a `volatile TickType_t` to record the tick of the most recent rising edge, and checked `matter_lamp_pulse_age_ms() > 50` in the main loop. The ISR never fired (count stayed at 0 with age growing to 90,000+ ms). Replaced with a simpler counter approach:
+
+- ISR: `s_lamp_pulse_count++` (volatile uint32_t, IRAM_ATTR)
+- Detection: compare count between consecutive main-loop ticks; if equal → pulses absent → button held
+- `GPIO_INTR_POSEDGE` → `GPIO_INTR_ANYEDGE` (catches both edges, rules out polarity ambiguity)
+
+**XIAO D-to-GPIO mapping discovery**
+
+Finding which physical pin carries the signal required a systematic scan. Added `matter_gpio_scan_for_signal()` — a startup function that configures each candidate GPIO as input and polls it 200,000 times, logging the HIGH count. Key findings from three scan runs (wire at D7, D8, D9 in turn):
+
+| XIAO pin | GPIO | Observation |
+|---|---|---|
+| D6 | GPIO6 | ~41–47% HIGHs — UART TX (console output). D6 is the board's TX silkscreen label. |
+| D7 | GPIO16 | 43–48% HIGHs — UART TX (UART0 TX, secondary path) |
+| D8 | GPIO17 | ~84–88% HIGHs — UART0 RX idle-HIGH state |
+| D9 | unknown | Showed same GPIO17 baseline; D9's true GPIO number not yet determined |
+
+GPIO12 and GPIO13 were added to the scan on the first run and caused a USB disconnect (they are the ESP32-C6's USB-Serial-JTAG D−/D+ lines). Excluded from subsequent scans. Recovery required BOOT+RESET to enter ROM download mode and flash from there.
+
+The pins in the D6–D9 cluster are all part of the UART/SPI header: D6 = UART TX, D7 = second UART TX path, D8 = UART RX. **None of these can be used for GPIO edge interrupts** — the UART driver claims the IO MUX, preventing `gpio_get_level` and GPIO interrupts from seeing signal transitions even when the physical signal is confirmed present by oscilloscope. (Oscilloscope confirmed signal at D7; GPIO poll returned 0 HIGHs throughout.)
+
+**208-count breakthrough**
+
+While physically moving the signal wire from D9 to D8, the main loop briefly logged `[HUMI] 💡 S2 physical press detected` and the pulse count jumped to 208 before stopping. At 100 Hz / ANYEDGE (200 edges/sec), 208 edges ≈ 1 second of real S2 signal — not mechanical contact bounce (which would produce thousands of edges in milliseconds). This confirms:
+
+1. The ISR infrastructure works end-to-end.
+2. GPIO19 briefly received the S2 signal during the wire transit.
+3. `lampListenGPIO = 19` is the correct GPIO to target.
+
+The count stopped at 208 after the wire settled into D8's breadboard hole, suggesting a contact or pin-mapping issue with the seated connection at D8.
+
+**ISR ordering bug found and fixed**
+
+Reviewing `setup_lamp_listen_gpio()` revealed a sequencing problem: `gpio_config()` was called with `GPIO_INTR_ANYEDGE` first, enabling the interrupt, then a 2M-poll diagnostic ran for ~860 ms, then `gpio_install_isr_service()` and `gpio_isr_handler_add()` were called. During the 860 ms window, S2 edges were firing GPIO interrupts with no handler registered. On ESP32, an unhandled GPIO interrupt leaves the interrupt-status register bit set, which can prevent subsequent edges from being detected even after the handler is finally registered.
+
+Fix applied to `setup_lamp_listen_gpio()`:
+
+1. `gpio_install_isr_service(0)` — install service first, before any interrupt is enabled
+2. `gpio_config()` with `GPIO_INTR_DISABLE` — configure pin, but keep interrupt off
+3. `gpio_isr_handler_add()` — register the handler
+4. `gpio_set_intr_type(GPIO_INTR_ANYEDGE)` + `gpio_intr_enable()` — arm the interrupt only after handler is ready
+
+The 2M diagnostic poll and the `matter_gpio_scan_for_signal()` startup call were both removed (served their purpose).
+
+**Current state (pending verification after next flash)**
+
+- `lampListenGPIO = 19` (D8 per user's wire position; exact D-to-GPIO mapping for D8 is not fully confirmed but GPIO19 is the target)
+- S2 divider: 10 kΩ series + 30 kΩ (10 kΩ + 20 kΩ in series) to GND → ~3.45 V output from 4.6 V panel signal
+- ISR ordering fix applied; awaiting test to confirm sustained count increment during idle and press detection
+- If sustained count increment is confirmed, the debug print at `Main.swift` can be uncommented briefly to verify, then removed
+
+---
+
 ## Key Decisions & Rationale
 
 - **ESP32-C6 over ESP32-C3**: C6 has native Thread (802.15.4); C3 is WiFi-only. Thread is preferred for Matter in Apple Home ecosystem.
